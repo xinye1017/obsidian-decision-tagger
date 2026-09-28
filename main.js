@@ -321,6 +321,14 @@ var translations = {
     "settings.tagLibrary.enableAll": "\u5168\u90E8\u542F\u7528",
     "settings.tagLibrary.disableAll": "\u5168\u90E8\u7981\u7528",
     "settings.tagLibrary.empty": "\u89C4\u5219\u5E93\u6682\u65E0\u6807\u7B7E\u3002\u70B9\u51FB\u300C\u626B\u63CF\u6807\u7B7E\u5E93\u300D\uFF0C\u5BFC\u5165\u77E5\u8BC6\u5E93\u5DF2\u6709\u6807\u7B7E\u3002",
+    "settings.tagLibrary.deleteTooltip": "\u4ECE\u89C4\u5219\u5E93\u53CA\u6240\u6709\u7B14\u8BB0\u4E2D\u5220\u9664\u6B64\u6807\u7B7E",
+    "settings.tagLibrary.deleteConfirmTitle": "\u5220\u9664\u6807\u7B7E #{tag}",
+    "settings.tagLibrary.deleteConfirmDesc": "\u786E\u5B9A\u8981\u5F7B\u5E95\u5220\u9664\u6807\u7B7E #{tag} \u5417\uFF1F\u6B64\u64CD\u4F5C\u5C06\u4ECE\u77E5\u8BC6\u5E93\u7684\u6240\u6709\u7B14\u8BB0\u4E2D\u79FB\u9664\u8BE5\u6807\u7B7E\uFF0C\u5E76\u4ECE\u89C4\u5219\u5E93\u4E2D\u5220\u9664\u3002",
+    "settings.tagLibrary.deleteButton": "\u786E\u8BA4\u5220\u9664",
+    "settings.tagLibrary.cancel": "\u53D6\u6D88",
+    "settings.tagLibrary.deleting": "\u6B63\u5728\u5220\u9664\u5E76\u6E05\u7406\u7B14\u8BB0\u2026",
+    "settings.tagLibrary.deleteSuccess": "\u5DF2\u6210\u529F\u4ECE {count} \u7BC7\u7B14\u8BB0\u4E2D\u79FB\u9664\u6807\u7B7E #{tag}\uFF0C\u5E76\u4ECE\u89C4\u5219\u5E93\u4E2D\u5220\u9664\uFF01",
+    "settings.tagLibrary.deleteFailed": "\u5220\u9664\u6807\u7B7E\u5931\u8D25: {error}",
     "tagSuggest.title": "{name}",
     "tagSuggest.loadingSubtitle": "\u6B63\u5728\u901A\u8FC7\u5F53\u524D\u6A21\u578B\u8BC4\u4F30\u5DF2\u542F\u7528\u7684\u6807\u7B7E\u3002",
     "tagSuggest.loading": "AI \u51B3\u7B56\u5206\u6790\u4E2D...",
@@ -446,6 +454,14 @@ var translations = {
     "settings.tagLibrary.enableAll": "Enable All",
     "settings.tagLibrary.disableAll": "Disable All",
     "settings.tagLibrary.empty": "No tags yet. Use \u201CSync vault tags\u201D to import tags already used in your vault.",
+    "settings.tagLibrary.deleteTooltip": "Delete this tag from the rule library and all notes",
+    "settings.tagLibrary.deleteConfirmTitle": "Delete Tag #{tag}",
+    "settings.tagLibrary.deleteConfirmDesc": "Are you sure you want to delete tag #{tag}? This will remove the tag from all notes across your vault and delete it from the rule library.",
+    "settings.tagLibrary.deleteButton": "Confirm Delete",
+    "settings.tagLibrary.cancel": "Cancel",
+    "settings.tagLibrary.deleting": "Deleting and cleaning notes\u2026",
+    "settings.tagLibrary.deleteSuccess": "Successfully removed tag #{tag} from {count} notes and deleted it from the library!",
+    "settings.tagLibrary.deleteFailed": "Failed to delete tag: {error}",
     "tagSuggest.title": "{name}",
     "tagSuggest.loadingSubtitle": "Evaluating enabled tags with the selected model.",
     "tagSuggest.loading": "Running AI decision analysis...",
@@ -982,6 +998,12 @@ var JevTaggerSettingTab = class extends import_obsidian3.PluginSettingTab {
               t(lang, "settings.tagLibrary.stats", { total: totalTags, enabled: updatedEnabled })
             );
           });
+        }).addExtraButton((btn) => {
+          btn.setIcon("trash-2").setTooltip(t(lang, "settings.tagLibrary.deleteTooltip")).onClick(() => {
+            new DeleteTagConfirmModal(this.app, this.plugin, tag, () => {
+              this.display();
+            }).open();
+          });
         });
       });
     } else {
@@ -991,6 +1013,61 @@ var JevTaggerSettingTab = class extends import_obsidian3.PluginSettingTab {
         text: t(lang, "settings.tagLibrary.empty")
       });
     }
+  }
+};
+var DeleteTagConfirmModal = class extends import_obsidian3.Modal {
+  constructor(app, plugin, tag, onDeleted) {
+    super(app);
+    this.plugin = plugin;
+    this.tag = tag;
+    this.onDeleted = onDeleted;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    const lang = this.plugin.settings.language;
+    contentEl.createEl("h2", {
+      text: t(lang, "settings.tagLibrary.deleteConfirmTitle", { tag: this.tag.name })
+    });
+    contentEl.createEl("p", {
+      text: t(lang, "settings.tagLibrary.deleteConfirmDesc", { tag: this.tag.name }),
+      cls: "setting-item-description"
+    });
+    const btnContainer = contentEl.createDiv({ cls: "modal-button-container" });
+    const cancelBtn = btnContainer.createEl("button", {
+      text: t(lang, "settings.tagLibrary.cancel")
+    });
+    cancelBtn.onclick = () => this.close();
+    const confirmBtn = btnContainer.createEl("button", {
+      cls: "mod-warning",
+      text: t(lang, "settings.tagLibrary.deleteButton")
+    });
+    confirmBtn.onclick = async () => {
+      confirmBtn.disabled = true;
+      confirmBtn.setText(t(lang, "settings.tagLibrary.deleting"));
+      try {
+        const result = await this.plugin.removeTagFromVault(this.tag.name);
+        new import_obsidian3.Notice(
+          t(lang, "settings.tagLibrary.deleteSuccess", {
+            tag: this.tag.name,
+            count: result.affectedNotes
+          })
+        );
+        this.onDeleted();
+        this.close();
+      } catch (err) {
+        new import_obsidian3.Notice(
+          t(lang, "settings.tagLibrary.deleteFailed", {
+            error: err?.message || String(err)
+          })
+        );
+        confirmBtn.disabled = false;
+        confirmBtn.setText(t(lang, "settings.tagLibrary.deleteButton"));
+      }
+    };
+  }
+  onClose() {
+    const { contentEl } = this;
+    contentEl.empty();
   }
 };
 
@@ -1426,6 +1503,92 @@ var JevTaggerPlugin = class extends import_obsidian5.Plugin {
       frontmatter.tags = currentTags;
     });
     return modified;
+  }
+  /**
+   * Safely removes a tag from frontmatter (and inline content) using Obsidian APIs
+   */
+  async removeTagFromFile(file, tagToRemove) {
+    let modified = false;
+    const cleanTag = tagToRemove.replace(/^#/, "").trim();
+    if (this.app.fileManager?.processFrontMatter) {
+      await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+        if (!frontmatter) return;
+        if (frontmatter.tags) {
+          let currentTags = [];
+          if (Array.isArray(frontmatter.tags)) {
+            currentTags = frontmatter.tags.map((t2) => String(t2).replace(/^#/, "").trim());
+          } else if (typeof frontmatter.tags === "string") {
+            currentTags = frontmatter.tags.split(/[\s,]+/).map((t2) => t2.replace(/^#/, "").trim());
+          }
+          const initialLength = currentTags.length;
+          currentTags = currentTags.filter((t2) => t2 !== cleanTag);
+          if (currentTags.length !== initialLength) {
+            modified = true;
+            frontmatter.tags = currentTags;
+          }
+        }
+        if (frontmatter.tag) {
+          let currentTags = [];
+          if (Array.isArray(frontmatter.tag)) {
+            currentTags = frontmatter.tag.map((t2) => String(t2).replace(/^#/, "").trim());
+          } else if (typeof frontmatter.tag === "string") {
+            currentTags = frontmatter.tag.split(/[\s,]+/).map((t2) => t2.replace(/^#/, "").trim());
+          }
+          const initialLength = currentTags.length;
+          currentTags = currentTags.filter((t2) => t2 !== cleanTag);
+          if (currentTags.length !== initialLength) {
+            modified = true;
+            frontmatter.tag = currentTags;
+          }
+        }
+      });
+    }
+    if (this.app.vault?.read && this.app.vault?.modify) {
+      try {
+        const content = await this.app.vault.read(file);
+        const frontmatterMatch = content.match(/^---[\s\S]*?---\r?\n?/);
+        const frontmatterPart = frontmatterMatch ? frontmatterMatch[0] : "";
+        const bodyPart = content.slice(frontmatterPart.length);
+        const escaped = cleanTag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const inlineRegex = new RegExp(`(^|\\s)#${escaped}(?=[\\s,\uFF0C.\u3002!\uFF01?\uFF1F:\uFF1A;\uFF1B"'\`\\]\\)\\>\\<]|$)(?!\\/)`, "g");
+        if (inlineRegex.test(bodyPart)) {
+          const updatedBody = bodyPart.replace(inlineRegex, (match, prefix) => {
+            return prefix.includes("\n") ? prefix : "";
+          });
+          if (updatedBody !== bodyPart) {
+            await this.app.vault.modify(file, frontmatterPart + updatedBody);
+            modified = true;
+          }
+        }
+      } catch {
+      }
+    }
+    return modified;
+  }
+  /**
+   * Removes a tag from all notes across the vault and deletes it from the tag library
+   */
+  async removeTagFromVault(tagName) {
+    const cleanTag = tagName.replace(/^#/, "").trim();
+    const files = this.app.vault.getMarkdownFiles ? this.app.vault.getMarkdownFiles() : [];
+    let affectedNotes = 0;
+    for (const file of files) {
+      const cache = this.app.metadataCache?.getFileCache ? this.app.metadataCache.getFileCache(file) : null;
+      let hasTag = false;
+      if (cache) {
+        const tags = (0, import_obsidian5.getAllTags)(cache) || [];
+        hasTag = tags.some((t2) => (typeof t2 === "string" ? t2 : t2?.tag || "").replace(/^#/, "").trim() === cleanTag);
+      } else {
+        hasTag = true;
+      }
+      if (hasTag) {
+        const modified = await this.removeTagFromFile(file, cleanTag);
+        if (modified) affectedNotes++;
+      }
+    }
+    this.settings.tags = this.settings.tags.filter((t2) => t2.name !== cleanTag);
+    await this.saveSettings();
+    return { affectedNotes, totalNotes: files.length };
   }
   /**
    * Detects all tags present in the current Obsidian Vault using metadataCache

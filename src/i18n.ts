@@ -62,6 +62,14 @@ const translations = {
 		"settings.tagLibrary.disableAll": "全部禁用",
 
 		"settings.tagLibrary.empty": "规则库暂无标签。点击「扫描标签库」，导入知识库已有标签。",
+		"settings.tagLibrary.deleteTooltip": "从规则库及所有笔记中删除此标签",
+		"settings.tagLibrary.deleteConfirmTitle": "删除标签 #{tag}",
+		"settings.tagLibrary.deleteConfirmDesc": "确定要彻底删除标签 #{tag} 吗？此操作将从知识库的所有笔记中移除该标签，并从规则库中删除。",
+		"settings.tagLibrary.deleteButton": "确认删除",
+		"settings.tagLibrary.cancel": "取消",
+		"settings.tagLibrary.deleting": "正在删除并清理笔记…",
+		"settings.tagLibrary.deleteSuccess": "已成功从 {count} 篇笔记中移除标签 #{tag}，并从规则库中删除！",
+		"settings.tagLibrary.deleteFailed": "删除标签失败: {error}",
 
 		"tagSuggest.title": "{name}",
 
@@ -218,6 +226,14 @@ const translations = {
 		"settings.tagLibrary.disableAll": "Disable All",
 
 		"settings.tagLibrary.empty": "No tags yet. Use “Sync vault tags” to import tags already used in your vault.",
+		"settings.tagLibrary.deleteTooltip": "Delete this tag from the rule library and all notes",
+		"settings.tagLibrary.deleteConfirmTitle": "Delete Tag #{tag}",
+		"settings.tagLibrary.deleteConfirmDesc": "Are you sure you want to delete tag #{tag}? This will remove the tag from all notes across your vault and delete it from the rule library.",
+		"settings.tagLibrary.deleteButton": "Confirm Delete",
+		"settings.tagLibrary.cancel": "Cancel",
+		"settings.tagLibrary.deleting": "Deleting and cleaning notes…",
+		"settings.tagLibrary.deleteSuccess": "Successfully removed tag #{tag} from {count} notes and deleted it from the library!",
+		"settings.tagLibrary.deleteFailed": "Failed to delete tag: {error}",
 
 		"tagSuggest.title": "{name}",
 

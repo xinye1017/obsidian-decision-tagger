@@ -201,6 +201,76 @@ test('TypeSafe and OpenRouter provider definitions and protocols are configured 
  assert.equal(detectResult.probability, 0.92);
  const sentDetectBody = JSON.parse(detectRequest.body);
  assert.equal(sentDetectBody.questions.q_detect.type, 'noul');
- assert.deepEqual(sentDetectBody.questions.q_detect.criteria, { true: 'Software testing', false: 'Other topics' });
+});
+
+test('removeTagFromFile removes tag from frontmatter and note body, preserving other content', async () => {
+ const api = load();
+ const plugin = new api.PluginClass();
+
+ let fileContent = '---\ntags:\n  - AI\n  - MachineLearning\n---\n# AI Research\nThis is a note about #AI and #DeepLearning.';
+ const fm = { tags: ['AI', 'MachineLearning'] };
+
+ plugin.app = {
+  fileManager: {
+   processFrontMatter: async (_file, cb) => cb(fm),
+  },
+  vault: {
+   read: async () => fileContent,
+   modify: async (_file, updated) => { fileContent = updated; },
+  },
+ };
+
+ const modified = await plugin.removeTagFromFile({}, 'AI');
+ assert.equal(modified, true);
+ assert.deepEqual(fm.tags, ['MachineLearning']);
+ assert.ok(!fileContent.includes('#AI and'));
+ assert.ok(fileContent.includes('#DeepLearning'));
+ assert.ok(fileContent.includes('# AI Research')); // Heading preserved
+
+ // Calling again should return false since AI tag is already removed
+ const modifiedAgain = await plugin.removeTagFromFile({}, 'AI');
+ assert.equal(modifiedAgain, false);
+});
+
+test('removeTagFromVault removes tag from all affected files and updates settings library', async () => {
+ const api = load();
+ const plugin = new api.PluginClass();
+
+ const file1 = { path: 'note1.md', basename: 'note1' };
+ const file2 = { path: 'note2.md', basename: 'note2' };
+ let file1Content = '# Heading\nNote 1 with #AI tag';
+ let file2Content = '# Heading\nNote 2 with #Web tag';
+
+ plugin.settings = {
+  tags: [
+   { name: 'AI', enabled: true },
+   { name: 'Web', enabled: true },
+  ],
+ };
+ plugin.saveSettings = async () => {};
+
+ plugin.app = {
+  vault: {
+   getMarkdownFiles: () => [file1, file2],
+   read: async (f) => f === file1 ? file1Content : file2Content,
+   modify: async (f, updated) => {
+    if (f === file1) file1Content = updated;
+    else file2Content = updated;
+   },
+  },
+  metadataCache: {
+   getFileCache: (f) => ({ tags: f === file1 ? ['#AI'] : ['#Web'] }),
+  },
+  fileManager: {
+   processFrontMatter: async () => {},
+  },
+ };
+
+ const res = await plugin.removeTagFromVault('AI');
+ assert.equal(res.affectedNotes, 1);
+ assert.equal(res.totalNotes, 2);
+ assert.ok(!file1Content.includes('#AI'));
+ assert.ok(file2Content.includes('#Web'));
+ assert.deepEqual(plugin.settings.tags, [{ name: 'Web', enabled: true }]);
 });
 

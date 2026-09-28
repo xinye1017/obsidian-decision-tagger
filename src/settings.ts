@@ -1,4 +1,4 @@
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, Modal, Notice, PluginSettingTab, Setting } from "obsidian";
 import type JevTaggerPlugin from "./main";
 import type { TagDefinition } from "./jevClient";
 import { BatchTagModal } from "./batchTagModal";
@@ -281,22 +281,32 @@ export class JevTaggerSettingTab extends PluginSettingTab {
 					nameEl.title = tag.instructions;
 				}
 
-				// Right: Toggle
+				// Right: Toggle & Delete
 				const toggleContainer = tagCard.createDiv({ cls: "jev-tag-card-toggle" });
-				new Setting(toggleContainer).addToggle((toggle) => {
-					toggle.toggleEl.setAttribute("aria-label", `#${tag.name}`);
-					toggle.setValue(tag.enabled).onChange(async (val) => {
-						tags[index].enabled = val;
-						tagCard.toggleClass("is-enabled", val);
-						tagCard.toggleClass("is-disabled", !val);
-						await this.plugin.saveSettings();
+				new Setting(toggleContainer)
+					.addToggle((toggle) => {
+						toggle.toggleEl.setAttribute("aria-label", `#${tag.name}`);
+						toggle.setValue(tag.enabled).onChange(async (val) => {
+							tags[index].enabled = val;
+							tagCard.toggleClass("is-enabled", val);
+							tagCard.toggleClass("is-disabled", !val);
+							await this.plugin.saveSettings();
 
-						const updatedEnabled = tags.filter((item) => item.enabled).length;
-						statsEl.setText(
-							t(lang, "settings.tagLibrary.stats", { total: totalTags, enabled: updatedEnabled })
-						);
+							const updatedEnabled = tags.filter((item) => item.enabled).length;
+							statsEl.setText(
+								t(lang, "settings.tagLibrary.stats", { total: totalTags, enabled: updatedEnabled })
+							);
+						});
+					})
+					.addExtraButton((btn) => {
+						btn.setIcon("trash-2")
+							.setTooltip(t(lang, "settings.tagLibrary.deleteTooltip"))
+							.onClick(() => {
+								new DeleteTagConfirmModal(this.app, this.plugin, tag, () => {
+									this.display();
+								}).open();
+							});
 					});
-				});
 			});
 		} else {
 			// Empty state guidance card
@@ -308,3 +318,72 @@ export class JevTaggerSettingTab extends PluginSettingTab {
 		}
 	}
 }
+
+export class DeleteTagConfirmModal extends Modal {
+	tag: TagDefinition;
+	plugin: JevTaggerPlugin;
+	onDeleted: () => void;
+
+	constructor(app: App, plugin: JevTaggerPlugin, tag: TagDefinition, onDeleted: () => void) {
+		super(app);
+		this.plugin = plugin;
+		this.tag = tag;
+		this.onDeleted = onDeleted;
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+		const lang = this.plugin.settings.language;
+
+		contentEl.createEl("h2", {
+			text: t(lang, "settings.tagLibrary.deleteConfirmTitle", { tag: this.tag.name }),
+		});
+
+		contentEl.createEl("p", {
+			text: t(lang, "settings.tagLibrary.deleteConfirmDesc", { tag: this.tag.name }),
+			cls: "setting-item-description",
+		});
+
+		const btnContainer = contentEl.createDiv({ cls: "modal-button-container" });
+
+		const cancelBtn = btnContainer.createEl("button", {
+			text: t(lang, "settings.tagLibrary.cancel"),
+		});
+		cancelBtn.onclick = () => this.close();
+
+		const confirmBtn = btnContainer.createEl("button", {
+			cls: "mod-warning",
+			text: t(lang, "settings.tagLibrary.deleteButton"),
+		});
+
+		confirmBtn.onclick = async () => {
+			confirmBtn.disabled = true;
+			confirmBtn.setText(t(lang, "settings.tagLibrary.deleting"));
+			try {
+				const result = await this.plugin.removeTagFromVault(this.tag.name);
+				new Notice(
+					t(lang, "settings.tagLibrary.deleteSuccess", {
+						tag: this.tag.name,
+						count: result.affectedNotes,
+					})
+				);
+				this.onDeleted();
+				this.close();
+			} catch (err: any) {
+				new Notice(
+					t(lang, "settings.tagLibrary.deleteFailed", {
+						error: err?.message || String(err),
+					})
+				);
+				confirmBtn.disabled = false;
+				confirmBtn.setText(t(lang, "settings.tagLibrary.deleteButton"));
+			}
+		};
+	}
+
+	onClose() {
+		const { contentEl } = this;
+		contentEl.empty();
+	}
+}
+

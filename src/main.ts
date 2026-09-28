@@ -354,6 +354,107 @@ export default class JevTaggerPlugin extends Plugin {
 	}
 
 	/**
+	 * Safely removes a tag from frontmatter (and inline content) using Obsidian APIs
+	 */
+	public async removeTagFromFile(file: TFile, tagToRemove: string): Promise<boolean> {
+		let modified = false;
+		const cleanTag = tagToRemove.replace(/^#/, "").trim();
+
+		// 1. Remove from Frontmatter
+		if (this.app.fileManager?.processFrontMatter) {
+			await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+				if (!frontmatter) return;
+
+				if (frontmatter.tags) {
+					let currentTags: string[] = [];
+					if (Array.isArray(frontmatter.tags)) {
+						currentTags = frontmatter.tags.map((t) => String(t).replace(/^#/, "").trim());
+					} else if (typeof frontmatter.tags === "string") {
+						currentTags = frontmatter.tags.split(/[\s,]+/).map((t) => t.replace(/^#/, "").trim());
+					}
+					const initialLength = currentTags.length;
+					currentTags = currentTags.filter((t) => t !== cleanTag);
+					if (currentTags.length !== initialLength) {
+						modified = true;
+						frontmatter.tags = currentTags;
+					}
+				}
+
+				if (frontmatter.tag) {
+					let currentTags: string[] = [];
+					if (Array.isArray(frontmatter.tag)) {
+						currentTags = frontmatter.tag.map((t) => String(t).replace(/^#/, "").trim());
+					} else if (typeof frontmatter.tag === "string") {
+						currentTags = frontmatter.tag.split(/[\s,]+/).map((t) => t.replace(/^#/, "").trim());
+					}
+					const initialLength = currentTags.length;
+					currentTags = currentTags.filter((t) => t !== cleanTag);
+					if (currentTags.length !== initialLength) {
+						modified = true;
+						frontmatter.tag = currentTags;
+					}
+				}
+			});
+		}
+
+		// 2. Remove inline tags from note body if vault read/modify is available
+		if (this.app.vault?.read && this.app.vault?.modify) {
+			try {
+				const content = await this.app.vault.read(file);
+				const frontmatterMatch = content.match(/^---[\s\S]*?---\r?\n?/);
+				const frontmatterPart = frontmatterMatch ? frontmatterMatch[0] : "";
+				const bodyPart = content.slice(frontmatterPart.length);
+
+				const escaped = cleanTag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+				const inlineRegex = new RegExp(`(^|\\s)#${escaped}(?=[\\s,，.。!！?？:：;；"'\`\\]\\)\\>\\<]|$)(?!\\/)`, "g");
+				if (inlineRegex.test(bodyPart)) {
+					const updatedBody = bodyPart.replace(inlineRegex, (match, prefix) => {
+						return prefix.includes("\n") ? prefix : "";
+					});
+					if (updatedBody !== bodyPart) {
+						await this.app.vault.modify(file, frontmatterPart + updatedBody);
+						modified = true;
+					}
+				}
+			} catch {
+				// Continue if file read/modify fails
+			}
+		}
+
+		return modified;
+	}
+
+	/**
+	 * Removes a tag from all notes across the vault and deletes it from the tag library
+	 */
+	public async removeTagFromVault(tagName: string): Promise<{ affectedNotes: number; totalNotes: number }> {
+		const cleanTag = tagName.replace(/^#/, "").trim();
+		const files = this.app.vault.getMarkdownFiles ? this.app.vault.getMarkdownFiles() : [];
+		let affectedNotes = 0;
+
+		for (const file of files) {
+			const cache = this.app.metadataCache?.getFileCache ? this.app.metadataCache.getFileCache(file) : null;
+			let hasTag = false;
+			if (cache) {
+				const tags = getAllTags(cache) || [];
+				hasTag = tags.some((t) => (typeof t === "string" ? t : (t as any)?.tag || "").replace(/^#/, "").trim() === cleanTag);
+			} else {
+				hasTag = true;
+			}
+
+			if (hasTag) {
+				const modified = await this.removeTagFromFile(file, cleanTag);
+				if (modified) affectedNotes++;
+			}
+		}
+
+		this.settings.tags = this.settings.tags.filter((t) => t.name !== cleanTag);
+		await this.saveSettings();
+
+		return { affectedNotes, totalNotes: files.length };
+	}
+
+	/**
 	 * Detects all tags present in the current Obsidian Vault using metadataCache
 	 * and syncs them into the plugin's tag library.
 	 */
