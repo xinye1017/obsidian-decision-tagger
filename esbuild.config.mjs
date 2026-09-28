@@ -11,7 +11,7 @@ if you want to view the source, please visit the github repository
 `;
 
 const prod = process.argv[2] === "production";
-const vaultPluginDir = "D:/Data/Documents/lixinye/.obsidian/plugins/smart-tagger";
+const vaultPluginDir = "D:/Data/Documents/lixinye/.obsidian/plugins/decision-tagger";
 
 const context = await esbuild.context({
 	banner: {

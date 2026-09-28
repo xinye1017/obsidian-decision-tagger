@@ -29,76 +29,239 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 var import_obsidian5 = require("obsidian");
 
-// src/jevClient.ts
+// src/modelClient.ts
 var import_obsidian = require("obsidian");
-var JevClient = class {
-  constructor(apiKey, endpoint = "https://api.typesafe.ai/v1/systemone") {
-    this.apiKey = apiKey;
-    this.endpoint = endpoint;
+var DECISIONS_SUFFIX = "/api/alpha/decisions";
+var DECISIONS_ALPHA_SUFFIX = "/alpha/decisions";
+var FULL_DECISIONS_PATH = /\/(decisions|systemone)$/;
+var PROVIDERS = {
+  typesafe: {
+    id: "typesafe",
+    name: "TypeSafe",
+    endpoint: "https://api.typesafe.ai/v1/systemone",
+    model: "jev-latest"
+  },
+  openrouter: {
+    id: "openrouter",
+    name: "OpenRouter",
+    endpoint: "https://openrouter.ai/api/alpha/decisions",
+    model: "respan/span-01-lite:free"
   }
-  setApiKey(key) {
-    this.apiKey = key;
+};
+function isNoulProvider(profile) {
+  return profile.id === "openrouter" || profile.endpoint.includes("openrouter.ai");
+}
+function formatStateAsString(state) {
+  if (typeof state === "string") return state;
+  if (!state || typeof state !== "object") return "";
+  const record = state;
+  const parts = [];
+  if (record.title) parts.push(`Title: ${record.title}`);
+  if (Array.isArray(record.headings) && record.headings.length) {
+    parts.push(`Headings: ${record.headings.join(" > ")}`);
   }
-  async evaluateNote(state, tags) {
-    if (!this.apiKey) {
-      throw new Error("Jev API Key is not configured. Please set it in the plugin settings.");
+  if (record.folder_context) parts.push(String(record.folder_context));
+  if (record.content_start) parts.push(String(record.content_start));
+  if (record.content_excerpt) parts.push(String(record.content_excerpt));
+  return parts.join("\n\n");
+}
+function defaultProfile() {
+  return { id: "typesafe", name: "TypeSafe", endpoint: PROVIDERS.typesafe.endpoint, model: PROVIDERS.typesafe.model, apiKey: "" };
+}
+function readProfile(value, fallback) {
+  return {
+    id: typeof value?.id === "string" && value.id ? value.id : fallback.id,
+    name: typeof value?.name === "string" && value.name ? value.name : fallback.name,
+    endpoint: typeof value?.endpoint === "string" ? value.endpoint : fallback.endpoint,
+    model: typeof value?.model === "string" ? value.model : fallback.model,
+    apiKey: typeof value?.apiKey === "string" ? value.apiKey : fallback.apiKey
+  };
+}
+function migrateModels(saved) {
+  const defaultTs = defaultProfile();
+  const defaultOr = {
+    id: "openrouter",
+    name: "OpenRouter",
+    endpoint: PROVIDERS.openrouter.endpoint,
+    model: PROVIDERS.openrouter.model,
+    apiKey: ""
+  };
+  let provider = saved?.provider === "openrouter" || saved?.activeModelId === "openrouter" ? "openrouter" : "typesafe";
+  const apiKeys = {
+    typesafe: saved?.apiKeys?.typesafe || (provider === "typesafe" ? saved?.apiKey || "" : ""),
+    openrouter: saved?.apiKeys?.openrouter || (provider === "openrouter" ? saved?.apiKey || "" : "")
+  };
+  let models;
+  if (Array.isArray(saved?.models) && saved.models.length) {
+    models = saved.models.map((p) => readProfile(p, defaultTs));
+    const tsModel = models.find((m) => m.id === "typesafe" || m.id === "jev");
+    if (tsModel?.apiKey && !apiKeys.typesafe) apiKeys.typesafe = tsModel.apiKey;
+    const orModel = models.find((m) => m.id === "openrouter");
+    if (orModel?.apiKey && !apiKeys.openrouter) apiKeys.openrouter = orModel.apiKey;
+  } else {
+    const ts = readProfile({ ...defaultTs, apiKey: saved?.apiKey || apiKeys.typesafe, endpoint: saved?.endpoint }, defaultTs);
+    if (saved?.endpoint) {
+      models = [ts];
+    } else {
+      const or = readProfile({ ...defaultOr, apiKey: apiKeys.openrouter }, defaultOr);
+      models = [ts, or];
     }
-    const enabledTags = tags.filter((t2) => t2.enabled);
-    if (enabledTags.length === 0) {
-      return [];
+  }
+  const activeModelId = models.some((p) => p.id === saved?.activeModelId) ? saved.activeModelId : models.some((p) => p.id === provider) ? provider : models[0].id;
+  return { models, activeModelId, provider, apiKeys };
+}
+var ModelError = class extends Error {
+  constructor(code, status = 0) {
+    super(code);
+    this.code = code;
+    this.status = status;
+  }
+};
+function validateProfile(profile) {
+  try {
+    const url = new URL(profile.endpoint.trim());
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.hash) throw new Error();
+  } catch {
+    throw new ModelError("config");
+  }
+}
+function resolveEndpoint(profile) {
+  const url = new URL(profile.endpoint.trim());
+  const path = url.pathname.replace(/\/+$/, "");
+  if (FULL_DECISIONS_PATH.test(path)) url.pathname = path;
+  else if (path.endsWith("/api") || path.endsWith("/v1")) url.pathname = `${path}${DECISIONS_ALPHA_SUFFIX}`;
+  else url.pathname = `${path}${DECISIONS_SUFFIX}`;
+  return url.toString();
+}
+function score(value) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) throw new ModelError("response");
+  return value;
+}
+function servedModel(data, fallback) {
+  return typeof data?.model === "string" && data.model ? data.model : fallback;
+}
+function parseResults(data, tags) {
+  return tags.filter((t2) => t2.enabled).map((tag) => {
+    const answer = data?.answers?.[`q_${tag.name}`];
+    if (!answer) throw new ModelError("response");
+    if (typeof answer.choice === "string" && ["match", "other"].includes(answer.choice)) {
+      const probability = answer.probabilities?.match !== void 0 ? score(answer.probabilities.match) : answer.choice === "match" ? score(answer.confidence) : 1 - score(answer.confidence);
+      return { tagName: tag.name, probability, confidence: score(answer.confidence ?? probability), isMatch: answer.choice === "match", description: tag.matchCriteria };
     }
-    const questions = {};
-    for (const tag of enabledTags) {
-      questions[`q_${tag.name}`] = {
-        type: "choice",
-        instructions: tag.instructions,
-        criteria: {
-          match: tag.matchCriteria,
-          other: tag.otherCriteria
-        }
+    if (answer.type === "noul" && typeof answer.noul === "number") {
+      const probability = score(answer.noul);
+      return {
+        tagName: tag.name,
+        probability,
+        confidence: probability,
+        isMatch: probability >= 0.5,
+        description: tag.matchCriteria
       };
     }
-    const payload = {
-      model: "jev-latest",
-      state,
-      questions
-    };
-    const response = await (0, import_obsidian.requestUrl)({
-      url: this.endpoint,
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        "Content-Type": "application/json",
-        "User-Agent": "obsidian-jev-tagger/1.0"
-      },
-      body: JSON.stringify(payload)
+    throw new ModelError("response");
+  }).sort((a, b) => b.probability - a.probability);
+}
+function isEligible(result, threshold) {
+  return result.isMatch && result.probability >= threshold;
+}
+var DETECTION_QUESTION = { type: "choice", instructions: "Is this note about software testing?", criteria: { match: "Software testing", other: "Other topics" } };
+var DETECTION_STATE = { title: "Connection test", content_start: "This note describes a software connection test." };
+var ModelClient = class {
+  constructor(profile) {
+    this.profile = { ...profile };
+  }
+  modelField() {
+    const model = this.profile.model.trim();
+    return model ? { model } : {};
+  }
+  // requestUrl cannot abort its transport. Cancellation/timeout discard late responses.
+  async post(body, signal) {
+    validateProfile(this.profile);
+    if (signal?.aborted) throw new ModelError("cancelled");
+    const data = await new Promise((resolve, reject) => {
+      let settled = false;
+      const timer = setTimeout(() => finish(new ModelError("timeout")), 6e4);
+      const abort = () => finish(new ModelError("cancelled"));
+      const finish = (error, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", abort);
+        if (error) reject(error);
+        else resolve(value);
+      };
+      signal?.addEventListener("abort", abort, { once: true });
+      Promise.resolve().then(() => {
+        if (signal?.aborted) throw new ModelError("cancelled");
+        return (0, import_obsidian.requestUrl)({
+          url: resolveEndpoint(this.profile),
+          method: "POST",
+          throw: false,
+          headers: { "Content-Type": "application/json", ...this.profile.apiKey ? { Authorization: `Bearer ${this.profile.apiKey}` } : {} },
+          body: JSON.stringify(body)
+        });
+      }).then((response) => {
+        if (settled) return;
+        if (response.status < 200 || response.status >= 300) return finish(new ModelError("http", response.status));
+        try {
+          finish(void 0, response.json);
+        } catch {
+          finish(new ModelError("response"));
+        }
+      }, (error) => finish(error instanceof ModelError ? error : new ModelError("network")));
     });
-    if (response.status !== 200) {
-      throw new Error(`Jev API Error (${response.status}): ${response.text}`);
-    }
-    const data = response.json;
-    const results = [];
-    for (const tag of enabledTags) {
-      const ans = data.answers[`q_${tag.name}`];
-      if (!ans) continue;
-      let matchProb = 0;
-      if (ans.probabilities && typeof ans.probabilities.match === "number") {
-        matchProb = ans.probabilities.match;
-      } else if (ans.choice === "match") {
-        matchProb = ans.confidence ?? 1;
-      } else {
-        matchProb = 0;
+    if (signal?.aborted) throw new ModelError("cancelled");
+    return data;
+  }
+  /** Sends one question per enabled tag and returns the parsed decisions. */
+  async evaluateNote(state, tags, signal) {
+    const enabled = tags.filter((t2) => t2.enabled);
+    if (!enabled.length) return [];
+    const isNoul = isNoulProvider(this.profile);
+    const formattedState = isNoul ? formatStateAsString(state) : state;
+    const questions = Object.fromEntries(enabled.map((tag) => [
+      `q_${tag.name}`,
+      isNoul ? {
+        type: "noul",
+        instructions: tag.instructions,
+        criteria: { true: tag.matchCriteria, false: tag.otherCriteria }
+      } : {
+        type: "choice",
+        instructions: tag.instructions,
+        criteria: { match: tag.matchCriteria, other: tag.otherCriteria }
       }
-      results.push({
-        tagName: tag.name,
-        probability: matchProb,
-        confidence: ans.confidence ?? matchProb,
-        isMatch: ans.choice === "match",
-        description: tag.matchCriteria
-      });
+    ]));
+    const data = await this.post({ ...this.modelField(), state: formattedState, questions }, signal);
+    return parseResults(data, enabled);
+  }
+  /**
+   * Probes the service with a built-in question and reports the decision model
+   * that answered, so a profile only needs a base URL and an API key.
+   */
+  async detect(signal) {
+    const isNoul = isNoulProvider(this.profile);
+    const state = isNoul ? "This note describes a software connection test." : DETECTION_STATE;
+    const questions = isNoul ? {
+      q_detect: {
+        type: "noul",
+        instructions: "Is this note about software testing?",
+        criteria: { true: "Software testing", false: "Other topics" }
+      }
+    } : {
+      q_detect: DETECTION_QUESTION
+    };
+    const data = await this.post({ ...this.modelField(), state, questions }, signal);
+    const answer = data?.answers?.q_detect;
+    if (!answer) throw new ModelError("response");
+    let probability = 0;
+    if (typeof answer.choice === "string" && ["match", "other"].includes(answer.choice)) {
+      probability = answer.probabilities?.match !== void 0 ? score(answer.probabilities.match) : answer.choice === "match" ? score(answer.confidence) : 1 - score(answer.confidence);
+    } else if (answer.type === "noul" && typeof answer.noul === "number") {
+      probability = score(answer.noul);
+    } else {
+      throw new ModelError("response");
     }
-    results.sort((a, b) => b.probability - a.probability);
-    return results;
+    return { model: servedModel(data, this.profile.model), probability, inputTokens: Number(data?.usage?.input_tokens ?? data?.usage?.total_tokens) || 0 };
   }
 };
 
@@ -116,9 +279,9 @@ var LANGUAGE_OPTIONS = {
 };
 var translations = {
   zh: {
-    "plugin.ribbon": "Smart Tagger: \u667A\u80FD\u6807\u7B7E\u63A8\u8350",
+    "plugin.ribbon": "decision tagger: \u667A\u80FD\u6807\u7B7E\u63A8\u8350",
     "notice.noActiveFile": "\u8BF7\u5148\u5728\u7F16\u8F91\u5668\u4E2D\u6253\u5F00\u4E00\u7BC7\u7B14\u8BB0\u3002",
-    "notice.analyzing": "Jev \u6B63\u5728\u5206\u6790\u7B14\u8BB0: {name}...",
+    "notice.analyzing": "\u6B63\u5728\u5206\u6790\u7B14\u8BB0\uFF1A{name}\u2026",
     "notice.noEligibleTags": "\u672A\u68C0\u6D4B\u5230\u7F6E\u4FE1\u5EA6 \u2265 {threshold}% \u7684\u65B0\u6807\u7B7E\u3002",
     "notice.autoApplySuccess": "\u5DF2\u6210\u529F\u81EA\u52A8\u8FFD\u52A0 {count} \u4E2A\u9AD8\u7F6E\u4FE1\u6807\u7B7E\uFF01",
     "notice.tagsAlreadyExist": "\u76F8\u5173\u6807\u7B7E\u5747\u5DF2\u5B58\u5728\u4E8E\u7B14\u8BB0\u4E2D\u3002",
@@ -128,74 +291,122 @@ var translations = {
     "notice.noVaultTags": "\u672A\u5728\u77E5\u8BC6\u5E93\u4E2D\u68C0\u6D4B\u5230\u5DF2\u6709\u6807\u7B7E\u3002",
     "notice.vaultTagsSynced": "\u{1F3F7}\uFE0F \u6807\u7B7E\u5E93\u68C0\u6D4B\u5B8C\u6210\uFF01\u5171\u626B\u63CF\u5230 {total} \u4E2A\u5DF2\u6709\u6807\u7B7E\uFF0C\u81EA\u52A8\u65B0\u53D1\u73B0\u5E76\u540C\u6B65 {added} \u4E2A\u65B0\u6807\u7B7E\u81F3\u89C4\u5219\u5E93\uFF01",
     "notice.batchComplete": "\u6279\u91CF\u6253\u6807\u5B8C\u6210\uFF01\u626B\u63CF {scanned} \u7BC7\u7B14\u8BB0\uFF0C\u4E3A {modified} \u7BC7\u7B14\u8BB0\u8FFD\u52A0\u4E86 {added} \u4E2A\u65B0\u6807\u7B7E\u3002",
-    "notice.predictFailed": "Smart Tagger \u9884\u6D4B\u51FA\u9519: {error}",
+    "notice.predictFailed": "decision tagger \u9884\u6D4B\u51FA\u9519: {error}",
     "command.suggestTags": "\u4E3A\u5F53\u524D\u6D3B\u52A8\u7B14\u8BB0\u63A8\u8350\u6807\u7B7E (Suggest Tags for Active Note)",
     "command.autoApply": "\u4E00\u952E\u81EA\u52A8\u5E94\u7528\u9AD8\u7F6E\u4FE1\u6807\u7B7E\u5230\u5F53\u524D\u7B14\u8BB0 (Auto-apply Tags to Active Note)",
     "command.batchTagAll": "\u6279\u91CF\u626B\u63CF\u7B14\u8BB0\u5E76\u6DFB\u52A0\u9AD8\u7F6E\u4FE1\u6807\u7B7E (Batch Tag Notes)",
     "command.syncVaultTags": "\u81EA\u52A8\u68C0\u6D4B\u5E76\u540C\u6B65\u77E5\u8BC6\u5E93\u6807\u7B7E\u5E93 (Detect and Sync Vault Tags)",
-    "menu.suggestTags": "Smart Tagger: \u667A\u80FD\u6807\u7B7E\u63A8\u8350",
-    "settings.title": "Smart Tagger \u8BBE\u7F6E",
-    "settings.subtitle": "\u57FA\u4E8E TypeSafe Jev System-1 \u51B3\u7B56\u5F15\u64CE\u7684\u6BEB\u79D2\u7EA7\u667A\u80FD\u7B14\u8BB0\u6807\u7B7E\u63A8\u8350\u4E0E\u5168\u81EA\u52A8\u5206\u7C7B\u52A9\u624B\u3002",
-    "settings.section.general": "\u2699\uFE0F \u57FA\u672C\u914D\u7F6E",
+    "menu.suggestTags": "decision tagger: \u667A\u80FD\u6807\u7B7E\u63A8\u8350",
+    "settings.title": "decision tagger \u8BBE\u7F6E",
+    "settings.subtitle": "\u4ECE\u7B14\u8BB0\u5230\u6807\u7B7E\uFF0C\u8BA9\u6BCF\u4E00\u6B65\u5206\u7C7B\u90FD\u6E05\u6670\u53EF\u89C1\u3002",
+    "settings.section.general": "\u57FA\u672C\u914D\u7F6E",
     "settings.language.name": "\u754C\u9762\u8BED\u8A00",
     "settings.language.desc": "\u9009\u62E9\u63D2\u4EF6\u754C\u9762\u6240\u4F7F\u7528\u7684\u8BED\u8A00\uFF08\u652F\u6301\u7B80\u4F53\u4E2D\u6587\u4E0E English\uFF09\u3002",
     "settings.apiKey.name": "Jev API \u5BC6\u94A5",
     "settings.apiKey.desc": "TypeSafe Jev \u5B98\u65B9 API \u5BC6\u94A5\uFF0C\u8F93\u5165\u540E\u81EA\u52A8\u91C7\u7528\u5BC6\u7801\u63A9\u7801\u4FDD\u62A4\u3002",
     "settings.apiKey.toggleTooltip": "\u5207\u6362\u663E\u793A/\u9690\u85CF API Key",
-    "settings.threshold.name": "\u7F6E\u4FE1\u5EA6\u63A8\u8350\u9608\u503C",
-    "settings.threshold.desc": "\u4EC5\u5F53\u6A21\u578B\u6253\u6807\u7F6E\u4FE1\u5EA6\u8FBE\u5230\u6216\u8D85\u8FC7\u8BE5\u9608\u503C\u65F6\u624D\u8FDB\u884C\u63A8\u8350\u6216\u5199\u5165\uFF08\u9ED8\u8BA4 70%\uFF09\u3002",
-    "settings.section.actions": "\u{1F680} \u6279\u91CF\u64CD\u4F5C\u4E0E\u7EF4\u62A4",
+    "settings.threshold.name": "\u81EA\u52A8\u5E94\u7528\u9608\u503C",
+    "settings.threshold.desc": "\u6A21\u578B\u5224\u5B9A\u5339\u914D\u4E14\u5206\u6570\u8FBE\u5230\u9608\u503C\u65F6\u624D\u81EA\u52A8\u5199\u5165\uFF1B\u5176\u4ED6\u7ED3\u679C\u4ECD\u53EF\u67E5\u770B\u3002",
+    "settings.section.actions": "\u77E5\u8BC6\u5E93\u64CD\u4F5C",
     "settings.batch.name": "\u6279\u91CF\u626B\u63CF\u6253\u6807",
     "settings.batch.desc": "\u6253\u5F00\u5168\u5E93\u6279\u91CF\u6253\u6807\u9762\u677F\uFF0C\u652F\u6301\u5168\u5E93\u6216\u6309\u6587\u4EF6\u5939\u626B\u63CF\u5E76\u81EA\u52A8\u8FFD\u52A0\u9AD8\u7F6E\u4FE1\u6807\u7B7E\u3002",
     "settings.batch.button": "\u6253\u5F00\u6279\u91CF\u9762\u677F",
     "settings.sync.name": "\u626B\u63CF\u540C\u6B65\u6807\u7B7E\u5E93",
     "settings.sync.desc": "\u5FEB\u901F\u63D0\u53D6\u77E5\u8BC6\u5E93\u5F53\u524D\u6240\u6709\u5DF2\u5B58\u5728\u7684\u5386\u53F2\u6807\u7B7E\uFF0C\u81EA\u52A8\u6269\u5145\u81F3\u4E0B\u65B9\u89C4\u5219\u5E93\u4E2D\u3002",
     "settings.sync.button": "\u626B\u63CF\u6807\u7B7E\u5E93",
-    "settings.section.tags": "\u{1F3F7}\uFE0F \u6807\u7B7E\u89C4\u5219\u5E93",
+    "settings.section.tags": "\u6807\u7B7E\u89C4\u5219\u5E93",
     "settings.tagLibrary.desc": "\u5F53\u524D\u7BA1\u7406\u7684\u5206\u7C7B\u6807\u7B7E\u5217\u8868\u3002\u70B9\u51FB\u5F00\u5173\u53EF\u968F\u65F6\u542F\u7528\u6216\u5173\u95ED\u7279\u5B9A\u6807\u7B7E\u7684\u81EA\u52A8\u8BC4\u4F30\u3002",
     "settings.tagLibrary.tagName": "#{name}",
     "settings.tagLibrary.stats": "\u5171 {total} \u4E2A\u6807\u7B7E\uFF0C\u5DF2\u542F\u7528 {enabled} \u4E2A",
     "settings.tagLibrary.enableAll": "\u5168\u90E8\u542F\u7528",
     "settings.tagLibrary.disableAll": "\u5168\u90E8\u7981\u7528",
-    "settings.tagLibrary.empty": "\u{1F4A1} \u89C4\u5219\u5E93\u6682\u65E0\u6807\u7B7E\u3002\u8BF7\u70B9\u51FB\u4E0A\u65B9\u7684\u300C\u626B\u63CF\u6807\u7B7E\u5E93\u300D\u6309\u94AE\uFF0C\u5373\u53EF\u5FEB\u901F\u63D0\u53D6\u77E5\u8BC6\u5E93\u5DF2\u6709\u6807\u7B7E\uFF01",
-    "tagSuggest.title": "\u{1F3F7}\uFE0F Smart Tagger: {name}",
-    "tagSuggest.loadingSubtitle": "\u6B63\u5728\u5411 Jev System-1 \u51B3\u7B56\u6A21\u578B\u83B7\u53D6\u6BEB\u79D2\u7EA7\u6807\u7B7E\u7F6E\u4FE1\u5EA6\u5206\u6790...",
+    "settings.tagLibrary.empty": "\u89C4\u5219\u5E93\u6682\u65E0\u6807\u7B7E\u3002\u70B9\u51FB\u300C\u626B\u63CF\u6807\u7B7E\u5E93\u300D\uFF0C\u5BFC\u5165\u77E5\u8BC6\u5E93\u5DF2\u6709\u6807\u7B7E\u3002",
+    "tagSuggest.title": "{name}",
+    "tagSuggest.loadingSubtitle": "\u6B63\u5728\u901A\u8FC7\u5F53\u524D\u6A21\u578B\u8BC4\u4F30\u5DF2\u542F\u7528\u7684\u6807\u7B7E\u3002",
     "tagSuggest.loading": "AI \u51B3\u7B56\u5206\u6790\u4E2D...",
-    "tagSuggest.analysisFailed": "\u274C \u5206\u6790\u5931\u8D25: {error}",
-    "tagSuggest.resultSubtitle": "\u63A8\u8350\u7F6E\u4FE1\u5EA6\u9608\u503C \u2265 {threshold}%\u3002\u70B9\u51FB\u6309\u94AE\u5373\u53EF\u5B89\u5168\u5199\u5165\u7B14\u8BB0 Frontmatter\u3002",
-    "tagSuggest.empty": "\u672A\u68C0\u6D4B\u5230\u7B26\u5408\u5F53\u524D\u7F6E\u4FE1\u5EA6\u9608\u503C\u7684\u6807\u7B7E\u3002",
+    "tagSuggest.analysisFailed": "\u5206\u6790\u5931\u8D25\uFF1A{error}",
+    "tagSuggest.resultSubtitle": "\u81EA\u52A8\u5E94\u7528\u9608\u503C {threshold}%\uFF0C\u4F60\u4E5F\u53EF\u4EE5\u9010\u4E2A\u786E\u8BA4\u3002",
+    "tagSuggest.empty": "\u6CA1\u6709\u7B26\u5408\u81EA\u52A8\u5E94\u7528\u6761\u4EF6\u7684\u6807\u7B7E\u3002",
     "tagSuggest.alreadyTagged": "(\u5DF2\u6253\u6807)",
     "tagSuggest.addButton": "+ \u6DFB\u52A0",
-    "tagSuggest.applyAllButton": "\u26A1 \u4E00\u952E\u5E94\u7528\u6240\u6709\u9AD8\u7F6E\u4FE1\u6807\u7B7E ({count}\u4E2A)",
+    "tagSuggest.applyAllButton": "\u5E94\u7528\u63A8\u8350\u6807\u7B7E\uFF08{count}\uFF09",
     "tagSuggest.close": "\u5173\u95ED",
-    "batch.title": "\u26A1 Smart Tagger: \u6279\u91CF\u626B\u63CF\u4E0E\u6253\u6807",
-    "batch.subtitle": "\u626B\u63CF\u6240\u9009\u6587\u4EF6\u5939\u6216\u6574\u4E2A\u77E5\u8BC6\u5E93\uFF0C\u5E76\u7531 Jev \u6A21\u578B\u8BC4\u4F30\u7B14\u8BB0\u3002\u8FBE\u5230 {threshold}% \u7F6E\u4FE1\u5EA6\u4E14\u5C1A\u672A\u5B58\u5728\u7684\u6807\u7B7E\u4F1A\u5199\u5165 Frontmatter\u3002",
+    "batch.title": "\u6279\u91CF\u5206\u7C7B",
+    "batch.subtitle": "\u8FBE\u5230 {threshold}% \u9608\u503C\u4E14\u88AB\u6A21\u578B\u5224\u5B9A\u5339\u914D\u7684\u6807\u7B7E\uFF0C\u5C06\u81EA\u52A8\u8FFD\u52A0\u5230\u7B14\u8BB0\u3002",
     "batch.scopeLabel": "\u626B\u63CF\u8303\u56F4",
     "batch.scopeDesc": "\u9009\u62E9\u6587\u4EF6\u5939\u540E\uFF0C\u4E5F\u4F1A\u626B\u63CF\u5176\u4E0B\u7EA7\u6587\u4EF6\u5939\u4E2D\u7684 Markdown \u7B14\u8BB0\u3002",
     "batch.scopeAll": "\u6574\u4E2A\u77E5\u8BC6\u5E93",
-    "batch.statScanned": "\u5DF2\u626B\u63CF\u7B14\u8BB0",
-    "batch.statModified": "\u547D\u4E2D\u6253\u6807\u7B14\u8BB0",
-    "batch.statAdded": "\u7D2F\u8BA1\u65B0\u589E\u6807\u7B7E",
+    "batch.statScanned": "\u5DF2\u5904\u7406\u7B14\u8BB0",
+    "batch.statModified": "\u66F4\u65B0\u7B14\u8BB0",
+    "batch.statAdded": "\u65B0\u589E\u6807\u7B7E",
     "batch.ready": "\u51C6\u5907\u5C31\u7EEA\uFF0C\u70B9\u51FB\u4E0B\u65B9\u6309\u94AE\u5F00\u59CB\u3002",
-    "batch.logHeader": "\u6267\u884C\u65E5\u5FD7:",
-    "batch.startHint": "\u70B9\u51FB [\u5F00\u59CB\u6279\u91CF\u6253\u6807] \u5373\u523B\u542F\u52A8\u540E\u53F0\u9AD8\u901F\u8BC4\u4F30...",
-    "batch.startButton": "\u{1F680} \u5F00\u59CB\u6279\u91CF\u6253\u6807",
+    "batch.logHeader": "\u6700\u8FD1\u7ED3\u679C \xB7 \u6700\u591A\u663E\u793A 100 \u6761",
+    "batch.startHint": "\u5F00\u59CB\u540E\u5C06\u5728\u8FD9\u91CC\u663E\u793A\u65B0\u589E\u3001\u65E0\u65B0\u589E\u4E0E\u5931\u8D25\u8BB0\u5F55\u3002",
+    "batch.startButton": "\u5F00\u59CB\u5206\u7C7B",
     "batch.close": "\u5173\u95ED",
-    "batch.stopButton": "\u23F9\uFE0F \u505C\u6B62\u626B\u63CF",
-    "batch.stopping": "\u6B63\u5728\u505C\u6B62...",
+    "batch.stopButton": "\u505C\u6B62\u5206\u7C7B",
+    "batch.stopping": "\u6B63\u5728\u505C\u6B62\uFF0C\u7B49\u5F85\u5DF2\u5F00\u59CB\u7684\u5199\u5165\u7ED3\u675F\u2026",
     "batch.finishedButton": "\u5B8C\u6210\u5173\u95ED",
     "batch.rescanButton": "\u91CD\u65B0\u626B\u63CF",
     "batch.logStart": "\u5F00\u59CB\u6279\u91CF\u5206\u6790\uFF0C\u8303\u56F4\uFF1A{scope}\uFF0C\u5171 {total} \u7BC7 Markdown \u7B14\u8BB0",
     "batch.logCancelled": "\u7528\u6237\u4E3B\u52A8\u4E2D\u6B62\u4E86\u6279\u91CF\u6253\u6807\u3002",
     "batch.logCurrentFile": "\u6B63\u5728\u5206\u6790 ({index}/{total}): {path}",
-    "batch.logAddedTags": "\u2705 [{name}] \u65B0\u589E\u6807\u7B7E: {tags}",
-    "batch.logError": "\u274C [{name}] \u9519\u8BEF: {error}",
-    "batch.allDone": "\u{1F389} \u6279\u91CF\u6253\u6807\u5168\u90E8\u5B8C\u6210\uFF01"
+    "batch.logAddedTags": "\u5DF2\u6DFB\u52A0 \xB7 {name} \u2192 {tags}",
+    "batch.logError": "\u5931\u8D25 \xB7 {name}\uFF1A{error}",
+    "batch.allDone": "\u5206\u7C7B\u5B8C\u6210",
+    "model.heading": "\u6A21\u578B\u63D0\u4F9B\u5546",
+    "model.desc": "\u652F\u6301\u9009\u62E9 TypeSafe \u4E0E OpenRouter \u6A21\u578B\u63D0\u4F9B\u5546\uFF0CBase URL \u4E0E\u6A21\u578B\u5DF2\u5185\u7F6E\u56FA\u5B9A\u3002",
+    "model.provider": "\u6A21\u578B\u63D0\u4F9B\u5546",
+    "model.providerDesc": "\u9009\u62E9\u8981\u4F7F\u7528\u7684\u51B3\u7B56\u6A21\u578B\u670D\u52A1\u5546\uFF08TypeSafe \u6216 OpenRouter\uFF09\u3002",
+    "model.active": "\u5F53\u524D\u6A21\u578B",
+    "model.add": "\u6DFB\u52A0\u6A21\u578B",
+    "model.name": "\u914D\u7F6E\u540D\u79F0",
+    "model.endpoint": "Base URL",
+    "model.baseurlFixedDesc": "\u670D\u52A1\u63A5\u53E3 Base URL\uFF08\u5DF2\u5185\u7F6E\u56FA\u5B9A\uFF0C\u65E0\u9700\u624B\u52A8\u914D\u7F6E\uFF09\u3002",
+    "model.id": "\u5F53\u524D\u6A21\u578B",
+    "model.modelFixedDesc": "\u5F53\u524D\u63D0\u4F9B\u5546\u6307\u5B9A\u7684\u51B3\u7B56\u6A21\u578B\uFF08\u5DF2\u9884\u8BBE\u56FA\u5B9A\uFF09\u3002",
+    "model.idDesc": "\u7559\u7A7A\u65F6\u7531\u670D\u52A1\u9009\u62E9\u9ED8\u8BA4\u51B3\u7B56\u6A21\u578B\uFF0C\u70B9\u51FB\u68C0\u6D4B\u540E\u81EA\u52A8\u586B\u5165\u5B9E\u9645\u54CD\u5E94\u7684\u6A21\u578B ID\u3002",
+    "model.idPlaceholder": "\u7559\u7A7A\u5219\u81EA\u52A8\u68C0\u6D4B",
+    "model.keyDesc": "\u8F93\u5165\u6240\u9009\u63D0\u4F9B\u5546\u7684 API Key\uFF0C\u4FDD\u5B58\u5728\u672C\u5730\u914D\u7F6E\u4E2D\u3002",
+    "model.test": "\u6D4B\u8BD5\u8FDE\u63A5",
+    "model.testDesc": "\u53D1\u9001\u5185\u7F6E\u6D4B\u8BD5\u8BF7\u6C42\uFF0C\u9A8C\u8BC1 API Key \u4E0E\u670D\u52A1\u8FDE\u901A\u6027\u3002",
+    "model.testing": "\u6B63\u5728\u6D4B\u8BD5\u8FDE\u63A5\u2026",
+    "model.testOk": "\u8FDE\u63A5\u6210\u529F\uFF0C\u54CD\u5E94\u6A21\u578B\uFF1A{model}",
+    "model.remove": "\u5220\u9664\u914D\u7F6E",
+    "model.confirmRemove": "\u786E\u8BA4\u5220\u9664\u6B64\u914D\u7F6E",
+    "error.config": "\u8BF7\u68C0\u67E5 Base URL \u4E0E API Key\uFF1B\u5730\u5740\u9700\u8981\u662F\u53EF\u8BBF\u95EE\u7684 http(s) \u670D\u52A1\u3002",
+    "error.network": "\u8FDE\u63A5\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5\u670D\u52A1\u5730\u5740\u3001\u7F51\u7EDC\u6216\u4EE3\u7406\u3002",
+    "error.timeout": "\u8BF7\u6C42\u8D85\u8FC7 60 \u79D2\uFF0C\u8BF7\u68C0\u67E5\u670D\u52A1\u540E\u91CD\u8BD5\u3002",
+    "error.response": "\u6A21\u578B\u8FD4\u56DE\u683C\u5F0F\u65E0\u6548\u6216\u7ED3\u679C\u4E0D\u5B8C\u6574\uFF0C\u672C\u6B21\u672A\u5199\u5165\u6807\u7B7E\u3002",
+    "error.http": "\u670D\u52A1\u8FD4\u56DE HTTP {status}\uFF0C\u8BF7\u68C0\u67E5\u8BA4\u8BC1\u3001\u5730\u5740\u3001\u6A21\u578B\u6743\u9650\u6216\u914D\u989D\u3002",
+    "error.cancelled": "\u5DF2\u505C\u6B62\u8BF7\u6C42\uFF0C\u540E\u7EED\u8FD4\u56DE\u7684\u7ED3\u679C\u4E0D\u4F1A\u5199\u5165\u3002",
+    "error.noTags": "\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u626B\u63CF\u6807\u7B7E\u5E93\uFF0C\u5E76\u542F\u7528\u81F3\u5C11\u4E00\u4E2A\u6807\u7B7E\u3002",
+    "progress.stages": "\u5206\u7C7B\u9636\u6BB5",
+    "progress.reading": "\u8BFB\u53D6\u7B14\u8BB0",
+    "progress.evaluating": "\u6A21\u578B\u5224\u65AD",
+    "progress.writing": "\u5199\u5165\u6807\u7B7E",
+    "progress.completed": "\u5DF2\u5B8C\u6210\u6BD4\u4F8B",
+    "batch.statFailed": "\u5931\u8D25\u7B14\u8BB0",
+    "batch.readyCount": "\u51C6\u5907\u5206\u7C7B \xB7 {count} \u7BC7\u7B14\u8BB0",
+    "batch.timing": "\u5DF2\u7528 {elapsed} \xB7 \u9884\u8BA1\u5269\u4F59 {eta} \xB7 \u65E0\u65B0\u589E {unchanged} \u7BC7",
+    "batch.unchanged": "\u65E0\u65B0\u589E \xB7 {name}",
+    "batch.busy": "\u5DF2\u6709\u6279\u91CF\u4EFB\u52A1\u5728\u8FD0\u884C\uFF0C\u8BF7\u5148\u505C\u6B62\u8BE5\u4EFB\u52A1\u3002",
+    "batch.cancelled": "\u5DF2\u505C\u6B62 \xB7 \u5DF2\u5199\u5165\u7684\u6807\u7B7E\u4FDD\u7559",
+    "batch.withErrors": "\u5904\u7406\u7ED3\u675F \xB7 {failed} \u7BC7\u5931\u8D25\uFF0C\u8BF7\u67E5\u770B\u8BB0\u5F55",
+    "batch.summary": "\u5DF2\u5904\u7406 {processed}/{total} \u7BC7 \xB7 \u66F4\u65B0 {modified} \u7BC7 \xB7 \u65B0\u589E {added} \u4E2A\u6807\u7B7E",
+    "result.summary": "{count} \u4E2A\u63A8\u8350 \xB7 \u5DF2\u8BC4\u4F30 {total} \u4E2A\u6807\u7B7E",
+    "result.low": "\u5176\u4ED6\u5224\u65AD\uFF08{count}\uFF09",
+    "result.lowHint": "\u672A\u6EE1\u8DB3\u81EA\u52A8\u5E94\u7528\u6761\u4EF6\uFF1B\u4F60\u4ECD\u53EF\u624B\u52A8\u6DFB\u52A0\u3002",
+    "result.recommended": "\u5EFA\u8BAE\u6DFB\u52A0",
+    "result.below": "\u672A\u8FBE\u63A8\u8350\u6761\u4EF6",
+    "result.retry": "\u91CD\u65B0\u5206\u6790",
+    "result.scoreNote": "\u5206\u6570\u662F\u6240\u9009\u6A21\u578B\u7ED9\u51FA\u7684\u5339\u914D\u8BC4\u5206\uFF0C\u4E0D\u4EE3\u8868\u7ECF\u6821\u51C6\u7684\u51C6\u786E\u7387\u3002",
+    "result.writeFailed": "\u5199\u5165\u5931\u8D25\uFF1A{error}"
   },
   en: {
-    "plugin.ribbon": "Smart Tagger: Suggest Tags",
+    "plugin.ribbon": "decision tagger: Suggest Tags",
     "notice.noActiveFile": "Please open a note in the editor first.",
-    "notice.analyzing": "Jev is analyzing note: {name}...",
+    "notice.analyzing": "Analyzing note: {name}\u2026",
     "notice.noEligibleTags": "No new tags found at or above the {threshold}% confidence threshold.",
     "notice.autoApplySuccess": "Successfully appended {count} high-confidence tags!",
     "notice.tagsAlreadyExist": "All relevant tags already exist in this note.",
@@ -205,69 +416,117 @@ var translations = {
     "notice.noVaultTags": "No existing tags were detected in this vault.",
     "notice.vaultTagsSynced": "\u{1F3F7}\uFE0F Tag library sync complete! Scanned {total} existing tags and discovered {added} new tags added to the rule library!",
     "notice.batchComplete": "Batch tagging complete! Scanned {scanned} notes and appended {added} new tags across {modified} notes.",
-    "notice.predictFailed": "Smart Tagger prediction failed: {error}",
+    "notice.predictFailed": "decision tagger prediction failed: {error}",
     "command.suggestTags": "Suggest tags for the active note",
     "command.autoApply": "Auto-apply tags to the active note",
     "command.batchTagAll": "Batch scan notes and add high-confidence tags",
     "command.syncVaultTags": "Detect and sync vault tags",
-    "menu.suggestTags": "Smart Tagger: Suggest Tags",
-    "settings.title": "Smart Tagger Settings",
-    "settings.subtitle": "Millisecond System-1 intelligent tag suggestions and automated categorization powered by TypeSafe Jev.",
-    "settings.section.general": "\u2699\uFE0F General Settings",
+    "menu.suggestTags": "decision tagger: Suggest Tags",
+    "settings.title": "decision tagger Settings",
+    "settings.subtitle": "From notes to tags, with a clear view of every step.",
+    "settings.section.general": "General",
     "settings.language.name": "Interface Language",
     "settings.language.desc": "Choose the display language for the plugin interface.",
     "settings.apiKey.name": "Jev API Key",
     "settings.apiKey.desc": "Your official TypeSafe Jev API key, automatically masked as password dots after entry.",
     "settings.apiKey.toggleTooltip": "Toggle API Key visibility",
-    "settings.threshold.name": "Confidence Threshold",
-    "settings.threshold.desc": "Only suggest or apply tags when the confidence reaches or exceeds this threshold (Default: 70%).",
-    "settings.section.actions": "\u{1F680} Batch Actions & Maintenance",
+    "settings.threshold.name": "Automatic application threshold",
+    "settings.threshold.desc": "Automatic writes require a matching decision and a score at or above this threshold. Other results remain available for review.",
+    "settings.section.actions": "Vault actions",
     "settings.batch.name": "Batch Scan & Tag",
     "settings.batch.desc": "Open the batch tagging panel to scan the entire vault or specific folders.",
     "settings.batch.button": "Open Batch Panel",
     "settings.sync.name": "Sync Vault Tags",
     "settings.sync.desc": "Scan all existing tags across your vault and automatically add new tags to the rule library below.",
     "settings.sync.button": "Scan Vault Tags",
-    "settings.section.tags": "\u{1F3F7}\uFE0F Tag Criteria Library",
+    "settings.section.tags": "Tag library",
     "settings.tagLibrary.desc": "Target tags for evaluation. Toggle individual tags on or off as needed.",
     "settings.tagLibrary.tagName": "#{name}",
     "settings.tagLibrary.stats": "{total} tags total, {enabled} enabled",
     "settings.tagLibrary.enableAll": "Enable All",
     "settings.tagLibrary.disableAll": "Disable All",
-    "settings.tagLibrary.empty": '\u{1F4A1} No tags in the rule library yet. Click "Scan Vault Tags" above to auto-detect existing tags from your vault!',
-    "tagSuggest.title": "\u{1F3F7}\uFE0F Smart Tagger: {name}",
-    "tagSuggest.loadingSubtitle": "Requesting millisecond tag confidence analysis from the Jev System-1 decision model...",
+    "settings.tagLibrary.empty": "No tags yet. Use \u201CSync vault tags\u201D to import tags already used in your vault.",
+    "tagSuggest.title": "{name}",
+    "tagSuggest.loadingSubtitle": "Evaluating enabled tags with the selected model.",
     "tagSuggest.loading": "Running AI decision analysis...",
-    "tagSuggest.analysisFailed": "\u274C Analysis failed: {error}",
-    "tagSuggest.resultSubtitle": "Confidence threshold \u2265 {threshold}%. Click a button to safely write the tag into the note frontmatter.",
-    "tagSuggest.empty": "No tags matched the current confidence threshold.",
+    "tagSuggest.analysisFailed": "Analysis failed: {error}",
+    "tagSuggest.resultSubtitle": "Automatic application threshold: {threshold}%. You can also review each tag.",
+    "tagSuggest.empty": "No tags qualify for automatic application.",
     "tagSuggest.alreadyTagged": "(already tagged)",
     "tagSuggest.addButton": "+ Add",
-    "tagSuggest.applyAllButton": "\u26A1 Apply all high-confidence tags ({count})",
+    "tagSuggest.applyAllButton": "Apply recommended tags ({count})",
     "tagSuggest.close": "Close",
-    "batch.title": "\u26A1 Smart Tagger: Batch scan & tag",
-    "batch.subtitle": "Scan the selected folder or the whole vault with the Jev model. Tags at or above the {threshold}% confidence threshold that are not already present will be added to the frontmatter.",
+    "batch.title": "Batch classification",
+    "batch.subtitle": "Tags with a matching decision and score \u2265 {threshold}% will be appended to notes.",
     "batch.scopeLabel": "Scan scope",
     "batch.scopeDesc": "Selecting a folder also includes Markdown notes in its subfolders.",
     "batch.scopeAll": "Entire vault",
-    "batch.statScanned": "Notes scanned",
-    "batch.statModified": "Notes tagged",
+    "batch.statScanned": "Processed notes",
+    "batch.statModified": "Updated notes",
     "batch.statAdded": "Tags added",
     "batch.ready": "Ready. Click the button below to start.",
-    "batch.logHeader": "Log:",
-    "batch.startHint": "Click [Start batch tagging] to begin high-speed evaluation in the background...",
-    "batch.startButton": "\u{1F680} Start batch tagging",
+    "batch.logHeader": "Recent results \xB7 Up to 100 entries",
+    "batch.startHint": "New tags, unchanged notes and failures will appear here.",
+    "batch.startButton": "Start classification",
     "batch.close": "Close",
-    "batch.stopButton": "\u23F9\uFE0F Stop scan",
-    "batch.stopping": "Stopping...",
+    "batch.stopButton": "Stop classification",
+    "batch.stopping": "Stopping; waiting for any write already in progress\u2026",
     "batch.finishedButton": "Done",
     "batch.rescanButton": "Rescan",
     "batch.logStart": "Starting batch analysis in {scope} over {total} Markdown notes",
     "batch.logCancelled": "Batch tagging was cancelled by the user.",
     "batch.logCurrentFile": "Analyzing ({index}/{total}): {path}",
-    "batch.logAddedTags": "\u2705 [{name}] added tags: {tags}",
-    "batch.logError": "\u274C [{name}] error: {error}",
-    "batch.allDone": "\u{1F389} Batch tagging complete!"
+    "batch.logAddedTags": "Added \xB7 {name} \u2192 {tags}",
+    "batch.logError": "Failed \xB7 {name}: {error}",
+    "batch.allDone": "Classification complete",
+    "model.heading": "Model Provider",
+    "model.desc": "Choose between TypeSafe and OpenRouter. Base URL and model are fixed and preconfigured.",
+    "model.provider": "Model Provider",
+    "model.providerDesc": "Select the decision model provider to use (TypeSafe or OpenRouter).",
+    "model.active": "Active model",
+    "model.add": "Add model",
+    "model.name": "Profile name",
+    "model.endpoint": "Base URL",
+    "model.baseurlFixedDesc": "Service Base URL (fixed and preconfigured).",
+    "model.id": "Current Model",
+    "model.modelFixedDesc": "Decision model specified for this provider (preconfigured).",
+    "model.idDesc": "Leave empty to let the service pick its default decision model. Detection fills in the model that answered.",
+    "model.idPlaceholder": "Detected automatically",
+    "model.keyDesc": "Enter API Key for the selected provider. Saved locally.",
+    "model.test": "Test Connection",
+    "model.testDesc": "Sends a test request to verify API Key and connectivity.",
+    "model.testing": "Testing connection\u2026",
+    "model.testOk": "Connected successfully, model: {model}",
+    "model.remove": "Delete profile",
+    "model.confirmRemove": "Confirm deletion",
+    "error.config": "Check the base URL and API key; the address must be a reachable http(s) service.",
+    "error.network": "Connection failed. Check the service URL, network or proxy.",
+    "error.timeout": "Request exceeded 60 seconds. Check the service and retry.",
+    "error.response": "Invalid or incomplete model response. No tags were written for this request.",
+    "error.http": "Service returned HTTP {status}. Check credentials, endpoint, model access or quota.",
+    "error.cancelled": "Request stopped. Late results will not be applied.",
+    "error.noTags": "Sync your tag library and enable at least one tag in settings first.",
+    "progress.stages": "Classification stages",
+    "progress.reading": "Read note",
+    "progress.evaluating": "Evaluate",
+    "progress.writing": "Apply tags",
+    "progress.completed": "Completed percentage",
+    "batch.statFailed": "Failed notes",
+    "batch.readyCount": "Ready to classify \xB7 {count} notes",
+    "batch.timing": "Elapsed {elapsed} \xB7 Est. remaining {eta} \xB7 Unchanged {unchanged}",
+    "batch.unchanged": "Unchanged \xB7 {name}",
+    "batch.busy": "Another batch is running. Stop it before starting a new batch.",
+    "batch.cancelled": "Stopped \xB7 Applied tags are retained",
+    "batch.withErrors": "Finished \xB7 {failed} notes failed; check the results",
+    "batch.summary": "Processed {processed}/{total} \xB7 Updated {modified} \xB7 Added {added} tags",
+    "result.summary": "{count} recommended \xB7 {total} tags evaluated",
+    "result.low": "Other decisions ({count})",
+    "result.lowHint": "Not eligible for automatic application. You can still add these manually.",
+    "result.recommended": "Recommended",
+    "result.below": "Not recommended",
+    "result.retry": "Analyze again",
+    "result.scoreNote": "Scores are model-reported match scores, not calibrated accuracy.",
+    "result.writeFailed": "Could not save tags: {error}"
   }
 };
 function t(language, key, params) {
@@ -279,191 +538,260 @@ function t(language, key, params) {
   );
 }
 
+// src/progressView.ts
+var ProgressView = class {
+  constructor(container, language) {
+    this.language = language;
+    const panel = container.createDiv({ cls: "jev-progress-panel" });
+    const track = panel.createDiv({ cls: "jev-stage-track", attr: { "aria-label": t(language, "progress.stages") } });
+    this.stages = ["reading", "evaluating", "writing"].map((stage, index) => {
+      const item = track.createDiv({ cls: "jev-stage" });
+      item.createSpan({ cls: "jev-stage-number", text: String(index + 1), attr: { "aria-hidden": "true" } });
+      item.createSpan({ text: t(language, `progress.${stage}`) });
+      return item;
+    });
+    const heading = panel.createDiv({ cls: "jev-progress-heading" });
+    this.status = heading.createDiv({ cls: "jev-progress-status", attr: { role: "status", "aria-live": "polite", "aria-atomic": "true" } });
+    this.percentage = heading.createSpan({ cls: "jev-progress-percent" });
+    this.bar = panel.createEl("progress", { cls: "jev-native-progress", attr: { max: "100", value: "0", "aria-label": t(language, "progress.completed") } });
+  }
+  stage(stage) {
+    const current = stage ? ["reading", "evaluating", "writing", "done"].indexOf(stage) : -1;
+    this.stages.forEach((item, index) => {
+      item.toggleClass("is-active", index === current);
+      item.toggleClass("is-complete", current > index);
+      if (index === current) item.setAttribute("aria-current", "step");
+      else item.removeAttribute("aria-current");
+    });
+  }
+  update(completed, total) {
+    const value = total > 0 ? Math.floor(completed / total * 100) : 0;
+    this.bar.value = value;
+    this.percentage.setText(`${value}%`);
+  }
+  indeterminate() {
+    this.bar.removeAttribute("value");
+    this.percentage.setText("");
+  }
+};
+function duration(milliseconds) {
+  const seconds = Math.floor(Math.max(0, milliseconds) / 1e3);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
 // src/batchTagModal.ts
+function inBatchScope(path, folder) {
+  if (folder && !path.startsWith(`${folder}/`)) return false;
+  return !path.startsWith(".") && !path.includes("/.") && !path.includes("\\.") && !/templates|模板/i.test(path);
+}
 var BatchTagModal = class extends import_obsidian2.Modal {
   constructor(app, plugin) {
     super(app);
-    this.isRunning = false;
-    this.isCancelled = false;
-    this.selectedFolderPath = "";
-    // Metrics
-    this.totalFiles = 0;
-    this.processedCount = 0;
-    this.modifiedFilesCount = 0;
-    this.addedTagsCount = 0;
     this.plugin = plugin;
+    this.running = false;
+    this.closed = false;
+    this.folder = "";
+    this.processed = 0;
+    this.modified = 0;
+    this.added = 0;
+    this.failed = 0;
+    this.unchanged = 0;
+    this.total = 0;
+    this.startedAt = 0;
   }
   tr(key, params) {
     return t(this.plugin.settings.language, key, params);
   }
+  files() {
+    return this.app.vault.getMarkdownFiles().filter((file) => inBatchScope(file.path, this.folder));
+  }
   onOpen() {
-    const { contentEl } = this;
-    contentEl.empty();
-    contentEl.addClass("jev-batch-modal");
-    const header = contentEl.createDiv({ cls: "jev-tagger-header" });
-    header.createEl("h3", { text: this.tr("batch.title") });
-    const thresholdPct = Math.round(this.plugin.settings.confidenceThreshold * 100);
-    header.createEl("div", {
-      cls: "jev-tagger-subtitle",
-      text: this.tr("batch.subtitle", { threshold: thresholdPct })
-    });
-    const folderPaths = this.app.vault.getAllLoadedFiles().filter((file) => file instanceof import_obsidian2.TFolder && file.path.length > 0).map((folder) => folder.path).sort((a, b) => a.localeCompare(b));
-    if (this.selectedFolderPath && !folderPaths.includes(this.selectedFolderPath)) {
-      this.selectedFolderPath = "";
-    }
-    new import_obsidian2.Setting(contentEl).setName(this.tr("batch.scopeLabel")).setDesc(this.tr("batch.scopeDesc")).addDropdown((dropdown) => {
+    this.closed = false;
+    this.modalEl.addClass("jev-modal-shell");
+    this.contentEl.addClass("jev-batch-modal");
+    const header = this.contentEl.createDiv({ cls: "jev-tagger-header" });
+    header.createDiv({ cls: "jev-eyebrow", text: "DECISION TAGGER / BATCH" });
+    header.createEl("h2", { text: this.tr("batch.title") });
+    header.createDiv({ cls: "jev-tagger-subtitle", text: this.tr("batch.subtitle", { threshold: Math.round(this.plugin.settings.confidenceThreshold * 100) }) });
+    this.modelLabel = header.createDiv({ cls: "jev-model-label" });
+    this.updateModelLabel();
+    new import_obsidian2.Setting(this.contentEl).setName(this.tr("batch.scopeLabel")).setDesc(this.tr("batch.scopeDesc")).addDropdown((dropdown) => {
       dropdown.addOption("", this.tr("batch.scopeAll"));
-      folderPaths.forEach((path) => dropdown.addOption(path, path));
-      dropdown.setValue(this.selectedFolderPath).onChange((path) => {
-        this.selectedFolderPath = path;
+      this.app.vault.getAllLoadedFiles().filter((file) => file instanceof import_obsidian2.TFolder && file.path !== "/" && file.path.length > 0).map((file) => file.path).sort((a, b) => a.localeCompare(b)).forEach((path) => dropdown.addOption(path, path));
+      dropdown.setValue(this.folder).onChange((path) => {
+        this.folder = path;
+        this.ready();
       });
-      this.scopeSelectEl = dropdown.selectEl;
+      this.scopeSelect = dropdown.selectEl;
     });
-    const statsContainer = contentEl.createDiv({ cls: "jev-batch-stats" });
-    const stat1 = statsContainer.createDiv({ cls: "jev-stat-card" });
-    this.processedStatEl = stat1.createDiv({ cls: "jev-stat-num", text: "0 / 0" });
-    stat1.createDiv({ cls: "jev-stat-label", text: this.tr("batch.statScanned") });
-    const stat2 = statsContainer.createDiv({ cls: "jev-stat-card" });
-    this.modifiedStatEl = stat2.createDiv({ cls: "jev-stat-num", text: "0" });
-    stat2.createDiv({ cls: "jev-stat-label", text: this.tr("batch.statModified") });
-    const stat3 = statsContainer.createDiv({ cls: "jev-stat-card" });
-    this.addedTagsStatEl = stat3.createDiv({ cls: "jev-stat-num", text: "0" });
-    stat3.createDiv({ cls: "jev-stat-label", text: this.tr("batch.statAdded") });
-    this.currentFileEl = contentEl.createDiv({
-      cls: "jev-batch-current-file",
-      text: this.tr("batch.ready")
+    this.progress = new ProgressView(this.contentEl, this.plugin.settings.language);
+    this.currentFile = this.contentEl.createDiv({ cls: "jev-batch-current-file" });
+    const stats = this.contentEl.createDiv({ cls: "jev-batch-stats" });
+    this.metrics = ["batch.statScanned", "batch.statModified", "batch.statAdded", "batch.statFailed"].map((key) => {
+      const metric = stats.createDiv({ cls: "jev-stat-card" });
+      const value = metric.createDiv({ cls: "jev-stat-num", text: "0" });
+      metric.createDiv({ cls: "jev-stat-label", text: this.tr(key) });
+      return value;
     });
-    const progressContainer = contentEl.createDiv({ cls: "jev-progress-bar-container" });
-    this.progressFillEl = progressContainer.createDiv({ cls: "jev-progress-bar-fill" });
-    this.progressFillEl.style.width = "0%";
-    contentEl.createEl("div", {
-      text: this.tr("batch.logHeader"),
-      cls: "setting-item-description",
-      attr: { style: "margin: 12px 0 4px 0;" }
-    });
-    this.logContainerEl = contentEl.createDiv({ cls: "jev-batch-log" });
-    this.addLog(this.tr("batch.startHint"), "jev-log-skip");
-    const footer = contentEl.createDiv({ cls: "jev-actions-footer" });
-    this.startBtn = footer.createEl("button", {
-      cls: "mod-cta",
-      text: this.tr("batch.startButton")
-    });
-    this.startBtn.onclick = () => this.startBatchProcess();
-    this.cancelBtn = footer.createEl("button", { text: this.tr("batch.close") });
-    this.cancelBtn.onclick = () => {
-      if (this.isRunning) {
-        this.isCancelled = true;
-        this.cancelBtn.setText(this.tr("batch.stopping"));
-        this.cancelBtn.disabled = true;
-      } else {
-        this.close();
-      }
+    this.detail = this.contentEl.createDiv({ cls: "jev-batch-detail" });
+    this.contentEl.createEl("h3", { text: this.tr("batch.logHeader"), cls: "jev-log-heading" });
+    this.log = this.contentEl.createDiv({ cls: "jev-batch-log", attr: { "aria-label": this.tr("batch.logHeader"), tabindex: "0" } });
+    this.addLog(this.tr("batch.startHint"));
+    const footer = this.contentEl.createDiv({ cls: "jev-actions-footer" });
+    this.stop = footer.createEl("button", { text: this.tr("batch.close") });
+    this.stop.onclick = () => {
+      if (this.running) this.cancel();
+      else this.close();
     };
+    this.start = footer.createEl("button", { cls: "mod-cta", text: this.tr("batch.startButton") });
+    this.start.onclick = () => this.run();
+    this.ready();
   }
-  addLog(text, cls = "jev-log-skip") {
-    const item = this.logContainerEl.createDiv({ cls: `jev-log-item ${cls}`, text });
-    this.logContainerEl.scrollTop = this.logContainerEl.scrollHeight;
+  updateModelLabel() {
+    this.modelLabel.setText(`${this.plugin.activeModel.name} \xB7 ${this.plugin.activeModel.model} \xB7 ${Math.round(this.plugin.settings.confidenceThreshold * 100)}%`);
   }
-  async startBatchProcess() {
-    if (this.isRunning) return;
-    const selectedFolderPath = this.selectedFolderPath;
-    const files = this.app.vault.getMarkdownFiles().filter((f) => {
-      const p = f.path;
-      if (selectedFolderPath && !p.startsWith(`${selectedFolderPath}/`)) return false;
-      if (p.startsWith(".") || p.includes("/.") || p.includes("\\.")) return false;
-      if (p.toLowerCase().includes("templates") || p.toLowerCase().includes("\u6A21\u677F")) return false;
-      return true;
-    });
-    this.totalFiles = files.length;
-    this.processedCount = 0;
-    this.modifiedFilesCount = 0;
-    this.addedTagsCount = 0;
-    this.isRunning = true;
-    this.isCancelled = false;
-    this.startBtn.disabled = true;
-    this.scopeSelectEl.disabled = true;
-    this.cancelBtn.setText(this.tr("batch.stopButton"));
-    this.addLog(
-      this.tr("batch.logStart", {
-        scope: selectedFolderPath || this.tr("batch.scopeAll"),
-        total: this.totalFiles
-      }),
-      "jev-log-skip"
-    );
-    for (let idx = 0; idx < files.length; idx++) {
-      if (this.isCancelled) {
-        this.addLog(this.tr("batch.logCancelled"), "jev-log-skip");
-        break;
-      }
-      const file = files[idx];
-      this.currentFileEl.setText(
-        this.tr("batch.logCurrentFile", { index: idx + 1, total: this.totalFiles, path: file.path })
-      );
-      const pct = Math.round((idx + 1) / this.totalFiles * 100);
-      this.progressFillEl.style.width = `${pct}%`;
-      try {
-        const results = await this.plugin.evaluateFile(file);
-        const eligible = results.filter((r) => r.probability >= this.plugin.settings.confidenceThreshold);
-        const cache = this.app.metadataCache.getFileCache(file);
-        const existingTags = /* @__PURE__ */ new Set();
-        if (cache?.frontmatter?.tags) {
-          const raw = cache.frontmatter.tags;
-          if (Array.isArray(raw)) raw.forEach((t2) => existingTags.add(String(t2).replace(/^#/, "")));
-          else if (typeof raw === "string") raw.split(/[\s,]+/).forEach((t2) => existingTags.add(t2.replace(/^#/, "")));
-        }
-        const toAdd = eligible.filter((r) => !existingTags.has(r.tagName));
-        if (toAdd.length > 0) {
-          let fileModified = false;
-          for (const item of toAdd) {
-            const added = await this.plugin.addTagToFile(file, item.tagName);
-            if (added) {
-              this.addedTagsCount++;
-              fileModified = true;
+  ready() {
+    this.total = this.files().length;
+    this.processed = this.modified = this.added = this.failed = this.unchanged = 0;
+    this.startedAt = 0;
+    this.refresh();
+    this.progress.stage();
+    this.currentFile.setText("");
+    this.progress.status.setText(this.tr("batch.readyCount", { count: this.total }));
+    this.start.disabled = this.total === 0;
+  }
+  addLog(text, state = "neutral") {
+    const atBottom = this.log.scrollHeight - this.log.scrollTop - this.log.clientHeight < 40;
+    this.log.createDiv({ cls: `jev-log-item is-${state}`, text });
+    while (this.log.children.length > 100) this.log.firstElementChild?.remove();
+    if (atBottom) this.log.scrollTop = this.log.scrollHeight;
+  }
+  refresh() {
+    if (this.closed) return;
+    [`${this.processed} / ${this.total}`, this.modified, this.added, this.failed].forEach((value, index) => this.metrics[index].setText(String(value)));
+    this.progress.update(this.processed, this.total);
+    const elapsed = this.startedAt ? Date.now() - this.startedAt : 0;
+    const eta = this.running && this.processed > 0 ? duration(elapsed / this.processed * (this.total - this.processed)) : "\u2014";
+    this.detail.setText(this.tr("batch.timing", { elapsed: duration(elapsed), eta, unchanged: this.unchanged }));
+  }
+  cancel() {
+    this.controller?.abort();
+    this.stop.disabled = true;
+    this.progress.status.setText(this.tr("batch.stopping"));
+  }
+  async run() {
+    if (this.running) return;
+    if (this.plugin.batchRunning) {
+      this.progress.status.setText(this.tr("batch.busy"));
+      return;
+    }
+    let session;
+    try {
+      session = this.plugin.createEvaluationSession();
+      validateProfile(session.client.profile);
+    } catch (error) {
+      this.progress.status.setText(this.plugin.errorText(error));
+      return;
+    }
+    const files = this.files();
+    if (!files.length) {
+      this.ready();
+      return;
+    }
+    this.ready();
+    this.updateModelLabel();
+    this.log.empty();
+    this.running = this.plugin.batchRunning = true;
+    this.controller = this.plugin.createController();
+    const signal = this.controller.signal;
+    this.startedAt = Date.now();
+    this.start.disabled = this.scopeSelect.disabled = true;
+    this.stop.setText(this.tr("batch.stopButton"));
+    const timer = setInterval(() => this.refresh(), 1e3);
+    try {
+      for (const file of files) {
+        if (signal.aborted) break;
+        this.currentFile.setText(file.path);
+        this.currentFile.title = file.path;
+        const addedNames = [];
+        let finished = false;
+        try {
+          const results = await this.plugin.evaluateFile(file, session, signal, (stage) => {
+            if (this.closed) return;
+            this.progress.stage(stage);
+            this.progress.status.setText(this.tr(`progress.${stage}`));
+          });
+          if (signal.aborted) break;
+          const eligible = results.filter((result) => isEligible(result, session.threshold));
+          this.progress.stage("writing");
+          this.progress.status.setText(this.tr("progress.writing"));
+          for (const result of eligible) {
+            if (signal.aborted) break;
+            if (await this.plugin.addTagToFile(file, result.tagName)) {
+              this.added++;
+              addedNames.push(result.tagName);
             }
           }
-          if (fileModified) {
-            this.modifiedFilesCount++;
-            const tagNames = toAdd.map((t2) => `#${t2.tagName}`).join(", ");
-            this.addLog(this.tr("batch.logAddedTags", { name: file.basename, tags: tagNames }), "jev-log-success");
+          if (!signal.aborted) {
+            finished = true;
+            if (!addedNames.length) {
+              this.unchanged++;
+              this.addLog(this.tr("batch.unchanged", { name: file.basename }));
+            }
           }
-        } else {
+        } catch (error) {
+          if (error instanceof ModelError && error.code === "cancelled") break;
+          this.failed++;
+          finished = true;
+          this.addLog(this.tr("batch.logError", { name: file.basename, error: this.plugin.errorText(error) }), "error");
+          if (error instanceof ModelError && (error.code === "config" || error.code === "http" && [401, 403, 404, 429].includes(error.status))) this.controller.abort();
+        } finally {
+          if (addedNames.length) {
+            this.modified++;
+            this.addLog(this.tr("batch.logAddedTags", { name: file.basename, tags: addedNames.map((name) => `#${name}`).join(" \xB7 ") }), "success");
+          }
+          if (finished) this.processed++;
+          this.refresh();
         }
-      } catch (err) {
-        this.addLog(this.tr("batch.logError", { name: file.basename, error: err.message || err }), "jev-log-skip");
+        if (signal.aborted) break;
+        await new Promise((resolve) => setTimeout(resolve, 80));
       }
-      this.processedCount = idx + 1;
-      this.processedStatEl.setText(`${this.processedCount} / ${this.totalFiles}`);
-      this.modifiedStatEl.setText(`${this.modifiedFilesCount}`);
-      this.addedTagsStatEl.setText(`${this.addedTagsCount}`);
-      await new Promise((res) => setTimeout(res, 80));
+    } finally {
+      clearInterval(timer);
+      this.plugin.releaseController(this.controller);
+      this.running = this.plugin.batchRunning = false;
+      if (!this.closed) {
+        const key = signal.aborted ? "batch.cancelled" : this.failed ? "batch.withErrors" : "batch.allDone";
+        this.progress.stage(signal.aborted || this.failed ? void 0 : "done");
+        this.progress.status.setText(this.tr(key, { failed: this.failed }));
+        this.currentFile.setText(this.tr("batch.summary", { processed: this.processed, total: this.total, modified: this.modified, added: this.added }));
+        this.refresh();
+        this.start.disabled = this.stop.disabled = this.scopeSelect.disabled = false;
+        this.start.setText(this.tr("batch.rescanButton"));
+        this.stop.setText(this.tr("batch.close"));
+        new import_obsidian2.Notice(this.tr(key, { failed: this.failed }));
+      }
     }
-    this.isRunning = false;
-    this.currentFileEl.setText(this.tr("batch.allDone"));
-    this.progressFillEl.style.width = "100%";
-    this.cancelBtn.setText(this.tr("batch.finishedButton"));
-    this.cancelBtn.disabled = false;
-    this.startBtn.setText(this.tr("batch.rescanButton"));
-    this.startBtn.disabled = false;
-    this.scopeSelectEl.disabled = false;
-    new import_obsidian2.Notice(
-      this.tr("notice.batchComplete", {
-        scanned: this.processedCount,
-        modified: this.modifiedFilesCount,
-        added: this.addedTagsCount
-      })
-    );
   }
   onClose() {
-    this.isCancelled = true;
-    const { contentEl } = this;
-    contentEl.empty();
+    this.closed = true;
+    this.controller?.abort();
+    this.contentEl.empty();
   }
 };
 
 // src/settings.ts
 var DEFAULT_SETTINGS = {
-  apiKey: "",
-  endpoint: "https://api.typesafe.ai/v1/systemone",
+  provider: "typesafe",
+  apiKeys: {
+    typesafe: "",
+    openrouter: ""
+  },
+  models: [
+    { id: "typesafe", name: "TypeSafe", endpoint: PROVIDERS.typesafe.endpoint, model: PROVIDERS.typesafe.model, apiKey: "" },
+    { id: "openrouter", name: "OpenRouter", endpoint: PROVIDERS.openrouter.endpoint, model: PROVIDERS.openrouter.model, apiKey: "" }
+  ],
+  activeModelId: "typesafe",
   language: "zh",
   confidenceThreshold: 0.7,
   tags: []
@@ -472,6 +800,75 @@ var JevTaggerSettingTab = class extends import_obsidian3.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
+  }
+  renderModels(container) {
+    const lang = this.plugin.settings.language;
+    const tr = (key, params) => t(lang, key, params);
+    new import_obsidian3.Setting(container).setHeading().setName(tr("model.heading")).setDesc(tr("model.desc"));
+    const panel = container.createDiv({ cls: "jev-model-panel" });
+    const activeProvider = this.plugin.settings.provider || "typesafe";
+    const profile = this.plugin.activeModel;
+    new import_obsidian3.Setting(panel).setName(tr("model.provider")).setDesc(tr("model.providerDesc")).addDropdown((dropdown) => {
+      dropdown.addOption("typesafe", "TypeSafe");
+      dropdown.addOption("openrouter", "OpenRouter");
+      dropdown.setValue(activeProvider).onChange(async (val) => {
+        this.plugin.settings.provider = val;
+        this.plugin.settings.activeModelId = val;
+        this.plugin.syncActiveModel();
+        await this.plugin.saveSettings();
+        this.display();
+      });
+    });
+    new import_obsidian3.Setting(panel).setName(tr("model.id")).setDesc(tr("model.modelFixedDesc")).addText((text) => {
+      text.setValue(profile.model);
+      text.inputEl.disabled = true;
+      text.inputEl.addClass("is-disabled");
+    });
+    new import_obsidian3.Setting(panel).setName(tr("model.endpoint")).setDesc(tr("model.baseurlFixedDesc")).addText((text) => {
+      text.setValue(profile.endpoint);
+      text.inputEl.disabled = true;
+      text.inputEl.addClass("is-disabled");
+    });
+    let input;
+    new import_obsidian3.Setting(panel).setName("API Key").setDesc(tr("model.keyDesc")).addText((text) => {
+      input = text.inputEl;
+      input.type = "password";
+      input.autocomplete = "off";
+      text.setPlaceholder(activeProvider === "openrouter" ? "sk-or-v1-..." : "apikey_...");
+      text.setValue(profile.apiKey).onChange(async (value) => {
+        const val = value.trim();
+        profile.apiKey = val;
+        if (!this.plugin.settings.apiKeys) {
+          this.plugin.settings.apiKeys = { typesafe: "", openrouter: "" };
+        }
+        this.plugin.settings.apiKeys[this.plugin.settings.provider] = val;
+        const found = this.plugin.settings.models.find((m) => m.id === this.plugin.settings.provider);
+        if (found) found.apiKey = val;
+        await this.plugin.saveSettings();
+      });
+    }).addExtraButton((button) => button.setIcon("eye-off").setTooltip(tr("settings.apiKey.toggleTooltip")).onClick(() => {
+      input.type = input.type === "password" ? "text" : "password";
+      button.setIcon(input.type === "password" ? "eye-off" : "eye");
+    }));
+    const status = panel.createDiv({ cls: "jev-model-status", attr: { role: "status", "aria-live": "polite" } });
+    new import_obsidian3.Setting(panel).setDesc(tr("model.testDesc")).addButton((button) => button.setButtonText(tr("model.test")).setCta().onClick(async () => {
+      button.setDisabled(true);
+      status.setText(tr("model.testing"));
+      const controller = this.plugin.createController();
+      try {
+        const detected = await new ModelClient(profile).detect(controller.signal);
+        status.setText(tr("model.testOk", { model: detected.model }));
+      } catch (error) {
+        status.setText(this.plugin.errorText(error));
+      } finally {
+        button.setDisabled(false);
+        this.plugin.releaseController(controller);
+      }
+    }));
+    panel.querySelectorAll(".setting-item").forEach((row) => {
+      const label = row.querySelector(".setting-item-name")?.textContent;
+      if (label) row.querySelectorAll("input, select").forEach((control) => control.setAttribute("aria-label", label));
+    });
   }
   display() {
     const { containerEl } = this;
@@ -486,6 +883,7 @@ var JevTaggerSettingTab = class extends import_obsidian3.PluginSettingTab {
     });
     new import_obsidian3.Setting(containerEl).setHeading().setName(t(lang, "settings.section.general"));
     new import_obsidian3.Setting(containerEl).setName(t(lang, "settings.language.name")).setDesc(t(lang, "settings.language.desc")).addDropdown((dropdown) => {
+      dropdown.selectEl.setAttribute("aria-label", t(lang, "settings.language.name"));
       LANGUAGES.forEach((key) => {
         dropdown.addOption(key, LANGUAGE_OPTIONS[key]);
       });
@@ -495,24 +893,7 @@ var JevTaggerSettingTab = class extends import_obsidian3.PluginSettingTab {
         this.display();
       });
     });
-    let keyInputEl;
-    let isRevealed = false;
-    new import_obsidian3.Setting(containerEl).setName(t(lang, "settings.apiKey.name")).setDesc(t(lang, "settings.apiKey.desc")).addText((text) => {
-      keyInputEl = text.inputEl;
-      keyInputEl.type = "password";
-      keyInputEl.placeholder = "apikey_...";
-      keyInputEl.addClass("jev-settings-apikey-input");
-      text.setValue(this.plugin.settings.apiKey).onChange(async (value) => {
-        this.plugin.settings.apiKey = value.trim();
-        await this.plugin.saveSettings();
-      });
-    }).addExtraButton((btn) => {
-      btn.setIcon("eye-off").setTooltip(t(lang, "settings.apiKey.toggleTooltip")).onClick(() => {
-        isRevealed = !isRevealed;
-        keyInputEl.type = isRevealed ? "text" : "password";
-        btn.setIcon(isRevealed ? "eye" : "eye-off");
-      });
-    });
+    this.renderModels(containerEl);
     const thresholdSetting = new import_obsidian3.Setting(containerEl).setName(t(lang, "settings.threshold.name")).setDesc(t(lang, "settings.threshold.desc"));
     const currentPct = Math.round(this.plugin.settings.confidenceThreshold * 100);
     const badgeEl = thresholdSetting.controlEl.createSpan({
@@ -581,6 +962,7 @@ var JevTaggerSettingTab = class extends import_obsidian3.PluginSettingTab {
         }
         const toggleContainer = tagCard.createDiv({ cls: "jev-tag-card-toggle" });
         new import_obsidian3.Setting(toggleContainer).addToggle((toggle) => {
+          toggle.toggleEl.setAttribute("aria-label", `#${tag.name}`);
           toggle.setValue(tag.enabled).onChange(async (val) => {
             tags[index].enabled = val;
             tagCard.toggleClass("is-enabled", val);
@@ -612,125 +994,133 @@ var TagSuggestModal = class extends import_obsidian4.Modal {
     this.file = file;
     this.results = [];
     this.existingTags = /* @__PURE__ */ new Set();
-    this.isLoading = true;
+    this.closed = false;
+    this.writing = false;
+    this.modelName = "";
+    this.error = "";
   }
   tr(key, params) {
     return t(this.plugin.settings.language, key, params);
   }
-  async onOpen() {
-    const { contentEl } = this;
-    contentEl.empty();
-    contentEl.addClass("jev-tagger-modal");
-    const header = contentEl.createDiv({ cls: "jev-tagger-header" });
-    header.createEl("h3", { text: this.tr("tagSuggest.title", { name: this.file.basename }) });
-    header.createEl("div", {
-      cls: "jev-tagger-subtitle",
-      text: this.tr("tagSuggest.loadingSubtitle")
-    });
-    const loadingEl = contentEl.createDiv({ cls: "jev-loading-container" });
-    loadingEl.createDiv({ cls: "jev-spinner" });
-    loadingEl.createEl("span", { text: this.tr("tagSuggest.loading") });
-    await this.readExistingTags();
-    try {
-      this.results = await this.plugin.evaluateFile(this.file);
-      this.isLoading = false;
-      this.renderResults();
-    } catch (error) {
-      loadingEl.empty();
-      loadingEl.createEl("div", {
-        cls: "setting-item-description",
-        text: this.tr("tagSuggest.analysisFailed", { error: error.message || error })
-      });
-      new import_obsidian4.Notice(this.tr("notice.predictFailed", { error: error.message || error }));
-    }
+  header(subtitle) {
+    const header = this.contentEl.createDiv({ cls: "jev-tagger-header" });
+    header.createDiv({ cls: "jev-eyebrow", text: "DECISION TAGGER / NOTE" });
+    header.createEl("h2", { text: this.file.basename });
+    header.createDiv({ cls: "jev-tagger-subtitle", text: subtitle });
+    header.createDiv({ cls: "jev-model-label", text: this.modelName });
   }
-  async readExistingTags() {
-    const cache = this.app.metadataCache.getFileCache(this.file);
-    if (cache?.frontmatter?.tags) {
-      const raw = cache.frontmatter.tags;
-      if (Array.isArray(raw)) {
-        raw.forEach((t2) => this.existingTags.add(String(t2).replace(/^#/, "")));
-      } else if (typeof raw === "string") {
-        raw.split(/[\s,]+/).forEach((t2) => this.existingTags.add(t2.replace(/^#/, "")));
-      }
+  async onOpen() {
+    this.closed = false;
+    this.modalEl.addClass("jev-modal-shell");
+    this.contentEl.addClass("jev-tagger-modal");
+    await this.analyze();
+  }
+  async analyze() {
+    this.error = "";
+    this.contentEl.empty();
+    this.modelName = `${this.plugin.activeModel.name} \xB7 ${this.plugin.activeModel.model}`;
+    this.header(this.tr("tagSuggest.loadingSubtitle"));
+    const progress = new ProgressView(this.contentEl, this.plugin.settings.language);
+    progress.indeterminate();
+    const close = this.contentEl.createEl("button", { text: this.tr("tagSuggest.close") });
+    close.onclick = () => this.close();
+    this.controller = this.plugin.createController();
+    try {
+      const session = this.plugin.createEvaluationSession();
+      this.threshold = session.threshold;
+      const cache = this.app.metadataCache.getFileCache(this.file);
+      const raw = cache?.frontmatter?.tags;
+      this.existingTags = new Set((Array.isArray(raw) ? raw.map(String) : typeof raw === "string" ? raw.split(/[\s,]+/) : []).map((tag) => tag.replace(/^#/, "")));
+      this.results = await this.plugin.evaluateFile(this.file, session, this.controller.signal, (stage) => {
+        if (this.closed) return;
+        progress.stage(stage);
+        progress.status.setText(this.tr(`progress.${stage}`));
+      });
+      if (!this.closed) this.renderResults();
+    } catch (error) {
+      if (this.closed || error instanceof ModelError && error.code === "cancelled") return;
+      this.contentEl.empty();
+      this.header(this.tr("tagSuggest.loadingSubtitle"));
+      this.contentEl.createDiv({ cls: "jev-inline-error", text: this.tr("tagSuggest.analysisFailed", { error: this.plugin.errorText(error) }), attr: { role: "alert" } });
+      const footer = this.contentEl.createDiv({ cls: "jev-actions-footer" });
+      footer.createEl("button", { text: this.tr("tagSuggest.close") }).onclick = () => this.close();
+      footer.createEl("button", { text: this.tr("result.retry"), cls: "mod-cta" }).onclick = () => this.analyze();
+    } finally {
+      this.plugin.releaseController(this.controller);
     }
   }
   renderResults() {
-    const { contentEl } = this;
-    contentEl.empty();
-    const header = contentEl.createDiv({ cls: "jev-tagger-header" });
-    header.createEl("h3", { text: this.tr("tagSuggest.title", { name: this.file.basename }) });
-    const thresholdPct = Math.round(this.plugin.settings.confidenceThreshold * 100);
-    header.createEl("div", {
-      cls: "jev-tagger-subtitle",
-      text: this.tr("tagSuggest.resultSubtitle", { threshold: thresholdPct })
-    });
-    const tagList = contentEl.createDiv({ cls: "jev-tag-list" });
-    if (this.results.length === 0) {
-      tagList.createDiv({
-        cls: "setting-item-description",
-        text: this.tr("tagSuggest.empty")
-      });
-    } else {
-      this.results.forEach((res) => {
-        const isExisting = this.existingTags.has(res.tagName);
-        const isHighConf = res.probability >= this.plugin.settings.confidenceThreshold;
-        const item = tagList.createDiv({ cls: "jev-tag-item" });
-        const info = item.createDiv({ cls: "jev-tag-info" });
-        const nameRow = info.createDiv({ cls: "jev-tag-name-row" });
-        nameRow.createEl("span", { cls: "jev-tag-badge", text: `#${res.tagName}` });
-        if (isExisting) {
-          nameRow.createEl("span", { cls: "jev-tag-existing", text: this.tr("tagSuggest.alreadyTagged") });
-        }
-        info.createEl("div", { cls: "jev-tag-desc", text: res.description });
-        const progressContainer = info.createDiv({ cls: "jev-progress-bar-container" });
-        const pct = Math.round(res.probability * 100);
-        const fill = progressContainer.createDiv({ cls: "jev-progress-bar-fill" });
-        fill.style.width = `${pct}%`;
-        if (pct >= 80) fill.style.backgroundColor = "var(--color-green, #10b981)";
-        else if (pct >= 60) fill.style.backgroundColor = "var(--color-blue, #3b82f6)";
-        else fill.style.backgroundColor = "var(--color-yellow, #f59e0b)";
-        const right = item.createDiv({ cls: "jev-tag-actions", attr: { style: "display: flex; align-items: center; gap: 10px;" } });
-        right.createEl("span", { cls: "jev-confidence-score", text: `${pct}%` });
-        if (!isExisting) {
-          const addBtn = right.createEl("button", {
-            cls: "mod-cta jev-btn-add",
-            text: this.tr("tagSuggest.addButton")
-          });
-          addBtn.onclick = async () => {
-            await this.addTagToNote(res.tagName);
-            this.existingTags.add(res.tagName);
-            this.renderResults();
-          };
-        }
-      });
+    if (this.closed) return;
+    this.contentEl.empty();
+    this.header(this.tr("tagSuggest.resultSubtitle", { threshold: Math.round(this.threshold * 100) }));
+    const recommended = this.results.filter((result) => isEligible(result, this.threshold));
+    const other = this.results.filter((result) => !isEligible(result, this.threshold));
+    this.contentEl.createDiv({ cls: "jev-result-summary", text: this.tr("result.summary", { count: recommended.length, total: this.results.length }), attr: { tabindex: "-1" } });
+    this.contentEl.createDiv({ cls: "jev-score-note", text: this.tr("result.scoreNote") });
+    if (this.error) this.contentEl.createDiv({ cls: "jev-inline-error", text: this.error, attr: { role: "alert" } });
+    const list = this.contentEl.createDiv({ cls: "jev-tag-list" });
+    if (!recommended.length) list.createDiv({ cls: "jev-tag-empty-state", text: this.tr("tagSuggest.empty") });
+    recommended.forEach((result) => this.renderTag(list, result, true));
+    if (other.length) {
+      const details = this.contentEl.createEl("details", { cls: "jev-other-results" });
+      details.createEl("summary", { text: this.tr("result.low", { count: other.length }) });
+      details.createDiv({ cls: "jev-score-note", text: this.tr("result.lowHint") });
+      other.forEach((result) => this.renderTag(details, result, false));
     }
-    const footer = contentEl.createDiv({ cls: "jev-actions-footer" });
-    const highConfNewTags = this.results.filter((r) => r.probability >= this.plugin.settings.confidenceThreshold && !this.existingTags.has(r.tagName)).map((r) => r.tagName);
-    if (highConfNewTags.length > 0) {
-      const applyAllBtn = footer.createEl("button", {
-        cls: "mod-cta",
-        text: this.tr("tagSuggest.applyAllButton", { count: highConfNewTags.length })
-      });
-      applyAllBtn.onclick = async () => {
-        for (const tag of highConfNewTags) {
-          await this.addTagToNote(tag);
-          this.existingTags.add(tag);
-        }
-        new import_obsidian4.Notice(this.tr("notice.applyAllSuccess", { count: highConfNewTags.length }));
-        this.close();
-      };
+    const footer = this.contentEl.createDiv({ cls: "jev-actions-footer" });
+    footer.createEl("button", { text: this.tr("tagSuggest.close") }).onclick = () => this.close();
+    const pending = recommended.filter((result) => !this.existingTags.has(result.tagName));
+    if (pending.length) {
+      const button = footer.createEl("button", { cls: "mod-cta", text: this.tr("tagSuggest.applyAllButton", { count: pending.length }) });
+      button.disabled = this.writing;
+      button.onclick = () => this.apply(pending.map((result) => result.tagName));
     }
-    const closeBtn = footer.createEl("button", { text: this.tr("tagSuggest.close") });
-    closeBtn.onclick = () => this.close();
   }
-  async addTagToNote(tagName) {
-    await this.plugin.addTagToFile(this.file, tagName);
-    new import_obsidian4.Notice(this.tr("notice.tagAdded", { tag: tagName }));
+  renderTag(container, result, recommended) {
+    const existing = this.existingTags.has(result.tagName);
+    const row = container.createDiv({ cls: `jev-tag-item ${recommended ? "is-recommended" : "is-muted"}` });
+    const info = row.createDiv({ cls: "jev-tag-info" });
+    const name = info.createDiv({ cls: "jev-tag-name-row" });
+    name.createSpan({ cls: "jev-tag-badge", text: `#${result.tagName}` });
+    name.createSpan({ cls: "jev-tag-existing", text: this.tr(existing ? "tagSuggest.alreadyTagged" : recommended ? "result.recommended" : "result.below") });
+    info.createDiv({ cls: "jev-tag-desc", text: result.description });
+    const track = info.createDiv({ cls: "jev-score-track" });
+    track.createEl("meter", { cls: "jev-score-meter", attr: { min: "0", max: "1", value: String(result.probability), "aria-label": `#${result.tagName}`, "aria-valuetext": `${Math.round(result.probability * 100)}%` } });
+    const marker = track.createSpan({ cls: "jev-threshold-marker", attr: { "aria-hidden": "true" } });
+    marker.style.left = `${this.threshold * 100}%`;
+    const actions = row.createDiv({ cls: "jev-tag-actions" });
+    actions.createSpan({ cls: "jev-confidence-score", text: `${Math.round(result.probability * 100)}%` });
+    if (!existing) {
+      const button = actions.createEl("button", { cls: "jev-btn-add", text: this.tr("tagSuggest.addButton"), attr: { "aria-label": `${this.tr("tagSuggest.addButton")} #${result.tagName}` } });
+      button.disabled = this.writing;
+      button.onclick = () => this.apply([result.tagName]);
+    }
+  }
+  async apply(tags) {
+    if (this.writing || this.closed) return;
+    this.writing = true;
+    this.error = "";
+    this.contentEl.querySelectorAll(".jev-btn-add, .mod-cta").forEach((button) => button.disabled = true);
+    let added = 0;
+    try {
+      for (const tag of tags) {
+        if (this.closed) break;
+        if (await this.plugin.addTagToFile(this.file, tag)) added++;
+        this.existingTags.add(tag);
+      }
+      if (added) new import_obsidian4.Notice(this.tr("notice.applyAllSuccess", { count: added }));
+    } catch (error) {
+      this.error = this.tr("result.writeFailed", { error: this.plugin.errorText(error) });
+    } finally {
+      this.writing = false;
+      this.renderResults();
+      if (!this.closed) this.contentEl.querySelector(".jev-result-summary")?.focus();
+    }
   }
   onClose() {
-    const { contentEl } = this;
-    contentEl.empty();
+    this.closed = true;
+    this.controller?.abort();
+    this.contentEl.empty();
   }
 };
 
@@ -762,12 +1152,16 @@ var LEGACY_DEFAULT_TAG_RULES = [
   }
 ];
 var JevTaggerPlugin = class extends import_obsidian5.Plugin {
+  constructor() {
+    super(...arguments);
+    this.batchRunning = false;
+    this.controllers = /* @__PURE__ */ new Set();
+  }
   tr(key, params) {
     return t(this.settings.language, key, params);
   }
   async onload() {
     await this.loadSettings();
-    this.jevClient = new JevClient(this.settings.apiKey, this.settings.endpoint);
     this.addRibbonIcon("tags", this.tr("plugin.ribbon"), (evt) => {
       const activeFile = this.app.workspace.getActiveFile();
       if (activeFile) {
@@ -830,14 +1224,46 @@ var JevTaggerPlugin = class extends import_obsidian5.Plugin {
       })
     );
     this.addSettingTab(new JevTaggerSettingTab(this.app, this));
-    console.log("Smart Tagger plugin loaded.");
+    console.log("decision tagger plugin loaded.");
   }
   onunload() {
-    console.log("Smart Tagger plugin unloaded.");
+    this.controllers.forEach((controller) => controller.abort());
+    console.log("decision tagger plugin unloaded.");
+  }
+  syncActiveModel() {
+    const provider = this.settings.provider || "typesafe";
+    const config = PROVIDERS[provider] || PROVIDERS.typesafe;
+    if (!this.settings.apiKeys) {
+      this.settings.apiKeys = { typesafe: "", openrouter: "" };
+    }
+    const key = this.settings.apiKeys[provider] || "";
+    if (!Array.isArray(this.settings.models)) {
+      this.settings.models = [];
+    }
+    let target = this.settings.models.find((m) => m.id === provider);
+    if (!target) {
+      target = {
+        id: config.id,
+        name: config.name,
+        endpoint: config.endpoint,
+        model: config.model,
+        apiKey: key
+      };
+      this.settings.models.push(target);
+    } else {
+      target.name = config.name;
+      target.endpoint = config.endpoint;
+      target.model = config.model;
+      target.apiKey = key;
+    }
+    this.settings.activeModelId = provider;
   }
   async loadSettings() {
     const savedData = await this.loadData();
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, savedData);
+    const { apiKey, endpoint, ...current } = savedData || {};
+    const migrated = migrateModels(savedData);
+    this.settings = { ...DEFAULT_SETTINGS, ...current, ...migrated, tags: Array.isArray(savedData?.tags) ? savedData.tags : [] };
+    this.syncActiveModel();
     if (Array.isArray(savedData?.tags)) {
       const filteredTags = this.settings.tags.filter(
         (tag) => !LEGACY_DEFAULT_TAG_RULES.some(
@@ -851,10 +1277,48 @@ var JevTaggerPlugin = class extends import_obsidian5.Plugin {
     }
   }
   async saveSettings() {
+    this.syncActiveModel();
     await this.saveData(this.settings);
-    if (this.jevClient) {
-      this.jevClient.setApiKey(this.settings.apiKey);
+  }
+  get activeModel() {
+    const provider = this.settings.provider || "typesafe";
+    const config = PROVIDERS[provider] || PROVIDERS.typesafe;
+    const found = this.settings.models?.find((model) => model.id === this.settings.activeModelId);
+    if (found) {
+      if (found.id === "typesafe" || found.id === "openrouter") {
+        found.endpoint = PROVIDERS[found.id].endpoint;
+        found.model = PROVIDERS[found.id].model;
+        if (this.settings.apiKeys?.[found.id] !== void 0) {
+          found.apiKey = this.settings.apiKeys[found.id];
+        }
+      }
+      return found;
     }
+    return {
+      id: config.id,
+      name: config.name,
+      endpoint: config.endpoint,
+      model: config.model,
+      apiKey: this.settings.apiKeys?.[provider] || ""
+    };
+  }
+  createEvaluationSession() {
+    const client = new ModelClient(this.activeModel);
+    const tags = this.settings.tags.map((tag) => ({ ...tag }));
+    if (!tags.some((tag) => tag.enabled)) throw new Error(this.tr("error.noTags"));
+    return { client, tags, threshold: this.settings.confidenceThreshold };
+  }
+  createController() {
+    const controller = new AbortController();
+    this.controllers.add(controller);
+    return controller;
+  }
+  releaseController(controller) {
+    this.controllers.delete(controller);
+  }
+  errorText(error) {
+    if (error instanceof ModelError) return this.tr(`error.${error.code}`, { status: error.status });
+    return error instanceof Error ? error.message : this.tr("error.response");
   }
   /**
    * Extracts clean state for Jev System-1 model evaluation
@@ -891,18 +1355,22 @@ var JevTaggerPlugin = class extends import_obsidian5.Plugin {
   /**
    * Calls Jev to evaluate the note against enabled tags
    */
-  async evaluateFile(file) {
+  async evaluateFile(file, session = this.createEvaluationSession(), signal, onStage) {
+    onStage?.("reading");
     const state = await this.buildNoteState(file);
-    return await this.jevClient.evaluateNote(state, this.settings.tags);
+    onStage?.("evaluating");
+    return await session.client.evaluateNote(state, session.tags, signal);
   }
   /**
    * Auto applies tags that meet the threshold
    */
   async autoApplyTags(file) {
     new import_obsidian5.Notice(this.tr("notice.analyzing", { name: file.basename }));
+    const controller = this.createController();
     try {
-      const results = await this.evaluateFile(file);
-      const eligible = results.filter((r) => r.probability >= this.settings.confidenceThreshold);
+      const session = this.createEvaluationSession();
+      const results = await this.evaluateFile(file, session, controller.signal);
+      const eligible = results.filter((r) => isEligible(r, session.threshold));
       if (eligible.length === 0) {
         new import_obsidian5.Notice(
           this.tr("notice.noEligibleTags", {
@@ -913,6 +1381,7 @@ var JevTaggerPlugin = class extends import_obsidian5.Plugin {
       }
       let addedCount = 0;
       for (const res of eligible) {
+        if (controller.signal.aborted) return;
         const added = await this.addTagToFile(file, res.tagName);
         if (added) addedCount++;
       }
@@ -922,7 +1391,9 @@ var JevTaggerPlugin = class extends import_obsidian5.Plugin {
         new import_obsidian5.Notice(this.tr("notice.tagsAlreadyExist"));
       }
     } catch (e) {
-      new import_obsidian5.Notice(this.tr("notice.autoApplyFailed", { error: e.message || e }));
+      new import_obsidian5.Notice(this.tr("notice.autoApplyFailed", { error: this.errorText(e) }));
+    } finally {
+      this.releaseController(controller);
     }
   }
   /**
@@ -952,7 +1423,11 @@ var JevTaggerPlugin = class extends import_obsidian5.Plugin {
    * and syncs them into the plugin's tag library.
    */
   async detectAndSyncVaultTags() {
-    const allTagsMap = this.app.metadataCache.getTags();
+    const allTagsMap = /* @__PURE__ */ Object.create(null);
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      const cache = this.app.metadataCache.getFileCache(file);
+      for (const tag of cache ? (0, import_obsidian5.getAllTags)(cache) || [] : []) allTagsMap[tag] = (allTagsMap[tag] || 0) + 1;
+    }
     const tagKeys = Object.keys(allTagsMap);
     if (tagKeys.length === 0) {
       new import_obsidian5.Notice(this.tr("notice.noVaultTags"));

@@ -2,19 +2,30 @@ import { App, PluginSettingTab, Setting } from "obsidian";
 import type JevTaggerPlugin from "./main";
 import type { TagDefinition } from "./jevClient";
 import { BatchTagModal } from "./batchTagModal";
-import { Language, LANGUAGES, LANGUAGE_OPTIONS, t } from "./i18n";
+import { Language, LANGUAGES, LANGUAGE_OPTIONS, TranslationKey, t } from "./i18n";
+import { defaultProfile, ModelClient, ModelProfile, ModelProvider, PROVIDERS } from "./modelClient";
 
 export interface JevTaggerSettings {
-	apiKey: string;
-	endpoint: string;
+	provider: ModelProvider;
+	apiKeys: Record<ModelProvider, string>;
+	models: ModelProfile[];
+	activeModelId: string;
 	language: Language;
 	confidenceThreshold: number;
 	tags: TagDefinition[];
 }
 
 export const DEFAULT_SETTINGS: JevTaggerSettings = {
-	apiKey: "",
-	endpoint: "https://api.typesafe.ai/v1/systemone",
+	provider: "typesafe",
+	apiKeys: {
+		typesafe: "",
+		openrouter: "",
+	},
+	models: [
+		{ id: "typesafe", name: "TypeSafe", endpoint: PROVIDERS.typesafe.endpoint, model: PROVIDERS.typesafe.model, apiKey: "" },
+		{ id: "openrouter", name: "OpenRouter", endpoint: PROVIDERS.openrouter.endpoint, model: PROVIDERS.openrouter.model, apiKey: "" },
+	],
+	activeModelId: "typesafe",
 	language: "zh",
 	confidenceThreshold: 0.70,
 	tags: [],
@@ -26,6 +37,102 @@ export class JevTaggerSettingTab extends PluginSettingTab {
 	constructor(app: App, plugin: JevTaggerPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
+	}
+
+	private renderModels(container: HTMLElement) {
+		const lang = this.plugin.settings.language;
+		const tr = (key: TranslationKey, params?: Record<string, string | number>) => t(lang, key, params);
+		new Setting(container).setHeading().setName(tr("model.heading")).setDesc(tr("model.desc"));
+		const panel = container.createDiv({ cls: "jev-model-panel" });
+		const activeProvider = this.plugin.settings.provider || "typesafe";
+		const profile = this.plugin.activeModel;
+
+		// 1. Model Provider Dropdown
+		new Setting(panel)
+			.setName(tr("model.provider"))
+			.setDesc(tr("model.providerDesc"))
+			.addDropdown(dropdown => {
+				dropdown.addOption("typesafe", "TypeSafe");
+				dropdown.addOption("openrouter", "OpenRouter");
+				dropdown.setValue(activeProvider).onChange(async (val: string) => {
+					this.plugin.settings.provider = val as ModelProvider;
+					this.plugin.settings.activeModelId = val;
+					this.plugin.syncActiveModel();
+					await this.plugin.saveSettings();
+					this.display();
+				});
+			});
+
+		// 2. Model (Fixed display)
+		new Setting(panel)
+			.setName(tr("model.id"))
+			.setDesc(tr("model.modelFixedDesc"))
+			.addText(text => {
+				text.setValue(profile.model);
+				text.inputEl.disabled = true;
+				text.inputEl.addClass("is-disabled");
+			});
+
+		// 3. Base URL (Fixed display)
+		new Setting(panel)
+			.setName(tr("model.endpoint"))
+			.setDesc(tr("model.baseurlFixedDesc"))
+			.addText(text => {
+				text.setValue(profile.endpoint);
+				text.inputEl.disabled = true;
+				text.inputEl.addClass("is-disabled");
+			});
+
+		// 4. API Key
+		let input: HTMLInputElement;
+		new Setting(panel)
+			.setName("API Key")
+			.setDesc(tr("model.keyDesc"))
+			.addText(text => {
+				input = text.inputEl;
+				input.type = "password";
+				input.autocomplete = "off";
+				text.setPlaceholder(activeProvider === "openrouter" ? "sk-or-v1-..." : "apikey_...");
+				text.setValue(profile.apiKey).onChange(async value => {
+					const val = value.trim();
+					profile.apiKey = val;
+					if (!this.plugin.settings.apiKeys) {
+						this.plugin.settings.apiKeys = { typesafe: "", openrouter: "" };
+					}
+					this.plugin.settings.apiKeys[this.plugin.settings.provider] = val;
+					const found = this.plugin.settings.models.find(m => m.id === this.plugin.settings.provider);
+					if (found) found.apiKey = val;
+					await this.plugin.saveSettings();
+				});
+			})
+			.addExtraButton(button => button.setIcon("eye-off").setTooltip(tr("settings.apiKey.toggleTooltip")).onClick(() => {
+				input.type = input.type === "password" ? "text" : "password";
+				button.setIcon(input.type === "password" ? "eye-off" : "eye");
+			}));
+
+		// 5. Test Connection
+		const status = panel.createDiv({ cls: "jev-model-status", attr: { role: "status", "aria-live": "polite" } });
+		new Setting(panel)
+			.setDesc(tr("model.testDesc"))
+			.addButton(button => button.setButtonText(tr("model.test")).setCta().onClick(async () => {
+				button.setDisabled(true);
+				status.setText(tr("model.testing"));
+				const controller = this.plugin.createController();
+				try {
+					const detected = await new ModelClient(profile).detect(controller.signal);
+					status.setText(tr("model.testOk", { model: detected.model }));
+				} catch (error) {
+					status.setText(this.plugin.errorText(error));
+				} finally {
+					button.setDisabled(false);
+					this.plugin.releaseController(controller);
+				}
+			}));
+
+		panel.querySelectorAll<HTMLElement>(".setting-item").forEach(row => {
+			const label = row.querySelector(".setting-item-name")?.textContent;
+			if (label) row.querySelectorAll("input, select").forEach(control => control.setAttribute("aria-label", label));
+		});
 	}
 
 	display(): void {
@@ -51,6 +158,7 @@ export class JevTaggerSettingTab extends PluginSettingTab {
 			.setName(t(lang, "settings.language.name"))
 			.setDesc(t(lang, "settings.language.desc"))
 			.addDropdown((dropdown) => {
+				dropdown.selectEl.setAttribute("aria-label", t(lang, "settings.language.name"));
 				LANGUAGES.forEach((key) => {
 					dropdown.addOption(key, LANGUAGE_OPTIONS[key]);
 				});
@@ -61,32 +169,7 @@ export class JevTaggerSettingTab extends PluginSettingTab {
 				});
 			});
 
-		// API Key
-		let keyInputEl: HTMLInputElement;
-		let isRevealed = false;
-
-		new Setting(containerEl)
-			.setName(t(lang, "settings.apiKey.name"))
-			.setDesc(t(lang, "settings.apiKey.desc"))
-			.addText((text) => {
-				keyInputEl = text.inputEl;
-				keyInputEl.type = "password";
-				keyInputEl.placeholder = "apikey_...";
-				keyInputEl.addClass("jev-settings-apikey-input");
-				text.setValue(this.plugin.settings.apiKey).onChange(async (value) => {
-					this.plugin.settings.apiKey = value.trim();
-					await this.plugin.saveSettings();
-				});
-			})
-			.addExtraButton((btn) => {
-				btn.setIcon("eye-off")
-					.setTooltip(t(lang, "settings.apiKey.toggleTooltip"))
-					.onClick(() => {
-						isRevealed = !isRevealed;
-						keyInputEl.type = isRevealed ? "text" : "password";
-						btn.setIcon(isRevealed ? "eye" : "eye-off");
-					});
-			});
+		this.renderModels(containerEl);
 
 		// Threshold Setting with real-time percentage badge
 		const thresholdSetting = new Setting(containerEl)
@@ -195,6 +278,7 @@ export class JevTaggerSettingTab extends PluginSettingTab {
 				// Right: Toggle
 				const toggleContainer = tagCard.createDiv({ cls: "jev-tag-card-toggle" });
 				new Setting(toggleContainer).addToggle((toggle) => {
+					toggle.toggleEl.setAttribute("aria-label", `#${tag.name}`);
 					toggle.setValue(tag.enabled).onChange(async (val) => {
 						tags[index].enabled = val;
 						tagCard.toggleClass("is-enabled", val);

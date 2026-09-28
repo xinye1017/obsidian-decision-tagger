@@ -1,9 +1,9 @@
 {
-  "id": "smart-tagger",
-  "name": "Smart Tagger",
+  "id": "decision-tagger",
+  "name": "decision tagger",
   "version": "1.0.0",
   "minAppVersion": "0.15.0",
-  "description": "System-1 intelligent tag assistant powered by Jev evaluation model. Fast, zero-hallucination, and high-accuracy note categorization.",
+  "description": "Classify notes with TypeSafe or OpenRouter decision models, review tag suggestions, and follow batch tagging progress.",
   "author": "xinyeli",
   "authorUrl": "https://github.com/xinye1017",
   "fundingUrl": "https://github.com/xinye1017",

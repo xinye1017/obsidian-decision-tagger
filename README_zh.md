@@ -1,50 +1,64 @@
-# Smart Tagger
+# decision tagger
 
-<p align="center">
-  <strong>一款基于云端模型 Jev 实现的 Obsidian 高速自动标签器。</strong>
-</p>
+一款支持 TypeSafe 和 OpenRouter 决策模型的 Obsidian 智能标签插件。
 
-<p align="center">
-  <a href="https://github.com/xinye1017/obsidian-smart-tagger/releases">GitHub Releases</a> ·
-  <a href="README.md">English</a>
-</p>
+[English](README.md) · [GitHub Releases](https://github.com/xinye1017/obsidian-decision-tagger/releases)
 
-Smart Tagger 通过 Jev API 按照可配置的标签规则分析笔记。你可以查看当前笔记的标签推荐、自动应用高置信标签，也可以按指定范围批量处理 Markdown 文件。
+decision tagger 根据你的标签规则分析笔记。你可以先查看推荐再确认，也可以自动应用推荐标签，或按文件夹、整个知识库批量处理。
 
 ## 功能
 
-- **当前笔记推荐：** 可从侧边栏图标、命令面板或文件菜单打开推荐面板，查看标签置信度，逐个添加标签或一次应用所有达到阈值的标签。
-- **自动应用：** 使用当前笔记的自动打标命令，将达到置信度阈值的标签写入笔记。
-- **批量打标：** 默认扫描整个知识库，也可以选择某个文件夹；选择文件夹时会递归包含其下级文件夹中的 Markdown 文件。隐藏路径和模板路径会跳过。面板显示处理进度、已扫描笔记、更新笔记和新增标签数量，扫描过程中可以停止。
-- **标签规则库：** 初始为空。扫描知识库中已经使用的标签即可生成规则，之后可按需启用或停用。
-- **安全更新 Frontmatter：** 通过 Obsidian 的 Frontmatter API 添加标签，并保留已有的 Frontmatter 字段。
-- **语言与阈值：** 界面支持简体中文和 English；可以设置自动应用标签的最低置信度。
+- **分类过程可视化：** 展示读取笔记、模型判断、写入标签三个阶段，以及真实完成比例、当前文件、耗时、预计剩余时间、更新数、新增标签数和失败数。最近 100 条记录区分新增、无新增与失败。
+- **支持多模型提供商：** 原生支持 **TypeSafe**（模型 `jev-latest`）与 **OpenRouter**（模型 `respan/span-01-lite:free`）。Base URL 与模型内置固定，无需手动配置繁琐的请求地址，填入对应 API Key 即可使用。
+- **当前笔记推荐：** 推荐标签与其他判断分开显示，提供匹配评分、阈值标记和结果说明；支持逐个添加或批量应用推荐标签。
+- **批量分类：** 默认整个知识库，也可以递归处理所选文件夹下的 Markdown 文件。隐藏路径和模板路径会跳过。停止或关闭面板后，不再继续写入后续标签；已完成的写入保留，进度不会被强制改为 100%。
+- **紧凑标签库：** 从知识库已有标签同步规则，默认不附带内置规则。桌面采用两列，窄窗口自动切换为一列，可单独或批量启停。
+- **保留笔记数据：** 通过 Obsidian `processFrontMatter` 追加标签，保留其他字段与已有标签，避免重复添加。
+- **主题与语言：** 跟随 Obsidian 明暗主题，支持简体中文、English、键盘焦点与减少动态效果偏好。
 
-## 工作逻辑
+## 模型配置
 
-1. Smart Tagger 从笔记标题、标题层级和正文片段中整理出精简摘要。对于较短的笔记，还会附带所在文件夹路径作为上下文。
-2. 插件将摘要和已启用的标签规则发送到 Jev 云端 API 进行评估。
-3. 插件将返回结果与设置的置信度阈值比较。
-4. 你可以查看推荐结果，或直接应用符合条件的标签。已有标签会保留，新标签会写入笔记的 Frontmatter。
+在 **设置 → decision tagger → 模型提供商** 中：
 
-笔记摘要和已启用的标签规则会发送给 Jev 进行评估。使用标签功能前，请在插件设置中填写 Jev API Key。
+1. **选择提供商**：选择 `TypeSafe` 或 `OpenRouter`。
+2. **确认 Base URL 与模型**：Base URL 和模型已在插件中内置写死（TypeSafe: `https://api.typesafe.ai/v1/systemone`，模型 `jev-latest`；OpenRouter: `https://openrouter.ai/api/alpha/decisions`，模型 `respan/span-01-lite:free`），无需用户手动配置。
+3. **输入 API Key**：填写所选提供商的 API 密钥。插件会独立保存每个提供商的密钥，方便随时切换。
+4. **测试连接**：点击 **测试连接** 按钮，验证密钥与连通性。测试只发送内置示例，不读取笔记正文。
 
-## 安装
+## 工作逻辑与数据处理
 
-1. 如果 Smart Tagger 已上架，可从 Obsidian 社区插件目录安装；也可以从 [GitHub Releases](https://github.com/xinye1017/obsidian-smart-tagger/releases) 下载插件文件。
-2. 手动安装时，将 `main.js`、`manifest.json` 和 `styles.css` 放入 `<Vault>/.obsidian/plugins/smart-tagger/`。
-3. 在 **设置 → 第三方插件** 中启用 Smart Tagger。
-4. 在插件设置中填写 Jev API Key。
+1. 提取笔记标题、最多 8 个标题层级、正文开头 450 字符，以及长文末尾 260 字符；短笔记另带文件夹上下文。已有 Frontmatter 和行内标签从分析正文中移除。
+2. 将这些上下文和已启用规则发送到当前模型配置指定的地址。笔记正文作为待分类数据，不作为系统指令。
+3. 决策服务为每个启用标签返回一条 `choice` 答案。缺失、未知或格式错误的答案会使本次评估失败，不自动写入；答案缺少 `probabilities` 时会回退使用 `choice` 与 `confidence`。
+4. 自动应用要求模型判定匹配且分数达到阈值；推荐面板仍允许手动添加其他判断中的标签。
 
-## 设置项
+批量任务固定使用启动时的模型、标签规则和阈值。请求超过 60 秒会报超时；认证失败、地址不存在和限流会停止剩余批次，其他单篇失败会记录后继续。取消会丢弃晚到的响应；Obsidian 的请求接口不能撤回已经发出的服务端请求。已开始的单次 Frontmatter 写入会完成，之后不再开始新写入。
 
-- **Jev API Key：** 用于认证 Jev API 请求；设置界面会遮罩显示密钥。
-- **置信度阈值：** 自动应用标签所需的最低置信度。
-- **标签规则库：** 从知识库中读取标签并生成规则，控制哪些标签参与评估。
+API Key 保存在 Obsidian 插件配置中；密码遮罩只是界面隐藏，不是加密。使用远程服务时，上述笔记上下文会发送给你选择的服务商。连接测试同样会使用该服务的 API 配额。
 
-## 从源码构建
+## 安装与开发
 
-克隆仓库并运行 `npm install` 安装依赖，然后执行 `npm run build`。
+从 [GitHub Releases](https://github.com/xinye1017/obsidian-decision-tagger/releases) 获取 `main.js`、`manifest.json` 和 `styles.css`，放入 `<Vault>/.obsidian/plugins/decision-tagger/`，然后启用插件。升级后重新加载插件或重启 Obsidian。
+
+```sh
+npm install
+npm run check
+npm test
+npm run build
+```
+
+本仓库现有 `build` 脚本还会将插件文件复制到 `D:/Data/Documents/lixinye/.obsidian/plugins/decision-tagger`，不会覆盖 `data.json`；在其他电脑上使用前请调整 `esbuild.config.mjs` 中的目标目录。
+
+`npm run preview` 在 `http://127.0.0.1:4178` 提供模拟宿主预览，使用实际 UI 源码和合成数据，不访问真实笔记或 API。它用于检查布局和交互，不能代替 Obsidian 真机验收。
+
+`npm run live` 是针对真实决策端点的可选联调检查。它用 `fetch` 承载 `requestUrl` 加载真实的 `modelClient`/`main` 源码，用四篇合成笔记对四条内置标签规则做分类，并校验传输契约（地址解析、请求体字段、认证头、每个启用标签恰好一条判定、概率范围）。HTTP 失败时会打印原始响应体，标签质量预期只作为警告而不影响退出码：
+
+```sh
+npm run live -- --mock                       # 内置 mock 决策服务，无需任何凭据
+DECISION_TAGGER_API_KEY=sk-... npm run live -- --endpoint http://127.0.0.1:3000 --model vendor/model-id
+```
+
+该检查针对 `POST {model, state, questions} -> {answers}` 契约，因此要求服务是 Decision/System-1 类型。对话模型只会响应 `/v1/chat/completions`，会拒绝该端点。
 
 ## 许可证
 

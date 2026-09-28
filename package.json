@@ -1,16 +1,20 @@
 {
-  "name": "obsidian-smart-tagger",
+  "name": "obsidian-decision-tagger",
   "version": "1.0.0",
-  "description": "System-1 intelligent tag assistant powered by Jev evaluation model",
+  "description": "Obsidian note classification with Jev and configurable API models",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
-    "build": "node esbuild.config.mjs production"
+    "build": "node esbuild.config.mjs production",
+    "check": "tsc --noEmit",
+    "test": "node --test tests/core.test.mjs",
+    "live": "node tests/live-check.mjs",
+    "preview": "node tests/preview-server.mjs"
   },
   "keywords": [
     "obsidian",
     "obsidian-plugin",
-    "smart-tagger",
+    "decision-tagger",
     "tagger",
     "jev",
     "ai",

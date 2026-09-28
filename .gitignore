@@ -4,3 +4,6 @@ node_modules/
 .vscode/
 dist/
 .commandcode/
+
+output/playwright/
+.playwright-cli/

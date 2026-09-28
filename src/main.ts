@@ -1,5 +1,6 @@
-import { Editor, MarkdownView, Notice, Plugin, TFile } from "obsidian";
-import { JevClient, NoteEvaluationResult } from "./jevClient";
+import { getAllTags, Notice, Plugin, TFile } from "obsidian";
+import { NoteEvaluationResult } from "./jevClient";
+import { ModelClient, ModelError, migrateModels, isEligible, ModelProfile, ModelProvider, PROVIDERS } from "./modelClient";
 import { DEFAULT_SETTINGS, JevTaggerSettings, JevTaggerSettingTab } from "./settings";
 import { TagSuggestModal } from "./tagSuggestModal";
 import { BatchTagModal } from "./batchTagModal";
@@ -34,7 +35,8 @@ const LEGACY_DEFAULT_TAG_RULES = [
 
 export default class JevTaggerPlugin extends Plugin {
 	settings: JevTaggerSettings;
-	jevClient: JevClient;
+	batchRunning = false;
+	private controllers = new Set<AbortController>();
 
 	private tr(key: TranslationKey, params?: Record<string, string | number>): string {
 		return t(this.settings.language, key, params);
@@ -42,7 +44,6 @@ export default class JevTaggerPlugin extends Plugin {
 
 	async onload() {
 		await this.loadSettings();
-		this.jevClient = new JevClient(this.settings.apiKey, this.settings.endpoint);
 
 		// Add Ribbon Icon on the left bar
 		this.addRibbonIcon("tags", this.tr("plugin.ribbon"), (evt: MouseEvent) => {
@@ -122,16 +123,49 @@ export default class JevTaggerPlugin extends Plugin {
 
 		// Add Settings Tab
 		this.addSettingTab(new JevTaggerSettingTab(this.app, this));
-		console.log("Smart Tagger plugin loaded.");
+		console.log("decision tagger plugin loaded.");
 	}
 
 	onunload() {
-		console.log("Smart Tagger plugin unloaded.");
+		this.controllers.forEach(controller => controller.abort());
+		console.log("decision tagger plugin unloaded.");
+	}
+
+	syncActiveModel() {
+		const provider = this.settings.provider || "typesafe";
+		const config = PROVIDERS[provider] || PROVIDERS.typesafe;
+		if (!this.settings.apiKeys) {
+			this.settings.apiKeys = { typesafe: "", openrouter: "" };
+		}
+		const key = this.settings.apiKeys[provider] || "";
+		if (!Array.isArray(this.settings.models)) {
+			this.settings.models = [];
+		}
+		let target = this.settings.models.find(m => m.id === provider);
+		if (!target) {
+			target = {
+				id: config.id,
+				name: config.name,
+				endpoint: config.endpoint,
+				model: config.model,
+				apiKey: key,
+			};
+			this.settings.models.push(target);
+		} else {
+			target.name = config.name;
+			target.endpoint = config.endpoint;
+			target.model = config.model;
+			target.apiKey = key;
+		}
+		this.settings.activeModelId = provider;
 	}
 
 	async loadSettings() {
 		const savedData = await this.loadData();
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, savedData);
+		const { apiKey, endpoint, ...current } = savedData || {};
+		const migrated = migrateModels(savedData);
+		this.settings = { ...DEFAULT_SETTINGS, ...current, ...migrated, tags: Array.isArray(savedData?.tags) ? savedData.tags : [] };
+		this.syncActiveModel();
 
 		// Remove unchanged built-in rules from older versions while preserving custom rules.
 		if (Array.isArray(savedData?.tags)) {
@@ -153,10 +187,51 @@ export default class JevTaggerPlugin extends Plugin {
 	}
 
 	async saveSettings() {
+		this.syncActiveModel();
 		await this.saveData(this.settings);
-		if (this.jevClient) {
-			this.jevClient.setApiKey(this.settings.apiKey);
+	}
+
+	get activeModel(): ModelProfile {
+		const provider = this.settings.provider || "typesafe";
+		const config = PROVIDERS[provider] || PROVIDERS.typesafe;
+		const found = this.settings.models?.find(model => model.id === this.settings.activeModelId);
+		if (found) {
+			if (found.id === "typesafe" || found.id === "openrouter") {
+				found.endpoint = PROVIDERS[found.id as ModelProvider].endpoint;
+				found.model = PROVIDERS[found.id as ModelProvider].model;
+				if (this.settings.apiKeys?.[found.id as ModelProvider] !== undefined) {
+					found.apiKey = this.settings.apiKeys[found.id as ModelProvider];
+				}
+			}
+			return found;
 		}
+		return {
+			id: config.id,
+			name: config.name,
+			endpoint: config.endpoint,
+			model: config.model,
+			apiKey: this.settings.apiKeys?.[provider] || "",
+		};
+	}
+
+	createEvaluationSession() {
+		const client = new ModelClient(this.activeModel);
+		const tags = this.settings.tags.map(tag => ({ ...tag }));
+		if (!tags.some(tag => tag.enabled)) throw new Error(this.tr("error.noTags"));
+		return { client, tags, threshold: this.settings.confidenceThreshold };
+	}
+
+	createController() {
+		const controller = new AbortController();
+		this.controllers.add(controller);
+		return controller;
+	}
+
+	releaseController(controller: AbortController) { this.controllers.delete(controller); }
+
+	errorText(error: unknown): string {
+		if (error instanceof ModelError) return this.tr(`error.${error.code}`, { status: error.status });
+		return error instanceof Error ? error.message : this.tr("error.response");
 	}
 
 	/**
@@ -207,9 +282,11 @@ export default class JevTaggerPlugin extends Plugin {
 	/**
 	 * Calls Jev to evaluate the note against enabled tags
 	 */
-	public async evaluateFile(file: TFile): Promise<NoteEvaluationResult[]> {
+	public async evaluateFile(file: TFile, session = this.createEvaluationSession(), signal?: AbortSignal, onStage?: (stage: "reading" | "evaluating") => void): Promise<NoteEvaluationResult[]> {
+		onStage?.("reading");
 		const state = await this.buildNoteState(file);
-		return await this.jevClient.evaluateNote(state, this.settings.tags);
+		onStage?.("evaluating");
+		return await session.client.evaluateNote(state, session.tags, signal);
 	}
 
 	/**
@@ -217,9 +294,11 @@ export default class JevTaggerPlugin extends Plugin {
 	 */
 	public async autoApplyTags(file: TFile) {
 		new Notice(this.tr("notice.analyzing", { name: file.basename }));
+		const controller = this.createController();
 		try {
-			const results = await this.evaluateFile(file);
-			const eligible = results.filter((r) => r.probability >= this.settings.confidenceThreshold);
+			const session = this.createEvaluationSession();
+			const results = await this.evaluateFile(file, session, controller.signal);
+			const eligible = results.filter((r) => isEligible(r, session.threshold));
 
 			if (eligible.length === 0) {
 				new Notice(
@@ -232,6 +311,7 @@ export default class JevTaggerPlugin extends Plugin {
 
 			let addedCount = 0;
 			for (const res of eligible) {
+				if (controller.signal.aborted) return;
 				const added = await this.addTagToFile(file, res.tagName);
 				if (added) addedCount++;
 			}
@@ -242,8 +322,8 @@ export default class JevTaggerPlugin extends Plugin {
 				new Notice(this.tr("notice.tagsAlreadyExist"));
 			}
 		} catch (e) {
-			new Notice(this.tr("notice.autoApplyFailed", { error: e.message || e }));
-		}
+			new Notice(this.tr("notice.autoApplyFailed", { error: this.errorText(e) }));
+		} finally { this.releaseController(controller); }
 	}
 
 	/**
@@ -278,7 +358,11 @@ export default class JevTaggerPlugin extends Plugin {
 	 * and syncs them into the plugin's tag library.
 	 */
 	public async detectAndSyncVaultTags(): Promise<{ added: number; total: number }> {
-		const allTagsMap = this.app.metadataCache.getTags();
+		const allTagsMap: Record<string, number> = Object.create(null);
+		for (const file of this.app.vault.getMarkdownFiles()) {
+			const cache = this.app.metadataCache.getFileCache(file);
+			for (const tag of cache ? getAllTags(cache) || [] : []) allTagsMap[tag] = (allTagsMap[tag] || 0) + 1;
+		}
 		const tagKeys = Object.keys(allTagsMap);
 
 		if (tagKeys.length === 0) {
