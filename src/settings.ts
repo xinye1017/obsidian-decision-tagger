@@ -63,27 +63,26 @@ export class JevTaggerSettingTab extends PluginSettingTab {
 				});
 			});
 
-		// 2. Model (Fixed display)
+		// 2. Model ID (Editable)
+		let modelInput: HTMLInputElement;
+		const defaultModel = PROVIDERS[activeProvider]?.model || "jev-latest";
 		new Setting(panel)
 			.setName(tr("model.id"))
-			.setDesc(tr("model.modelFixedDesc"))
+			.setDesc(tr("model.idDesc"))
 			.addText(text => {
-				text.setValue(profile.model);
-				text.inputEl.disabled = true;
-				text.inputEl.addClass("is-disabled");
+				modelInput = text.inputEl;
+				text.setPlaceholder(defaultModel)
+					.setValue(profile.model)
+					.onChange(async value => {
+						const val = value.trim();
+						profile.model = val;
+						const found = this.plugin.settings.models.find(m => m.id === this.plugin.settings.provider);
+						if (found) found.model = val;
+						await this.plugin.saveSettings();
+					});
 			});
 
-		// 3. Base URL (Fixed display)
-		new Setting(panel)
-			.setName(tr("model.endpoint"))
-			.setDesc(tr("model.baseurlFixedDesc"))
-			.addText(text => {
-				text.setValue(profile.endpoint);
-				text.inputEl.disabled = true;
-				text.inputEl.addClass("is-disabled");
-			});
-
-		// 4. API Key
+		// 3. API Key
 		let input: HTMLInputElement;
 		new Setting(panel)
 			.setName("API Key")
@@ -110,7 +109,7 @@ export class JevTaggerSettingTab extends PluginSettingTab {
 				button.setIcon(input.type === "password" ? "eye-off" : "eye");
 			}));
 
-		// 5. Test Connection
+		// 4. Test Connection
 		const status = panel.createDiv({ cls: "jev-model-status", attr: { role: "status", "aria-live": "polite" } });
 		new Setting(panel)
 			.setDesc(tr("model.testDesc"))
@@ -120,6 +119,13 @@ export class JevTaggerSettingTab extends PluginSettingTab {
 				const controller = this.plugin.createController();
 				try {
 					const detected = await new ModelClient(profile).detect(controller.signal);
+					if (!profile.model.trim()) {
+						profile.model = detected.model;
+						if (modelInput) modelInput.value = detected.model;
+						const found = this.plugin.settings.models.find(m => m.id === this.plugin.settings.provider);
+						if (found) found.model = detected.model;
+						await this.plugin.saveSettings();
+					}
 					status.setText(tr("model.testOk", { model: detected.model }));
 				} catch (error) {
 					status.setText(this.plugin.errorText(error));

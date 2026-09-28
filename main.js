@@ -355,7 +355,7 @@ var translations = {
     "batch.logError": "\u5931\u8D25 \xB7 {name}\uFF1A{error}",
     "batch.allDone": "\u5206\u7C7B\u5B8C\u6210",
     "model.heading": "\u6A21\u578B\u63D0\u4F9B\u5546",
-    "model.desc": "\u652F\u6301\u9009\u62E9 TypeSafe \u4E0E OpenRouter \u6A21\u578B\u63D0\u4F9B\u5546\uFF0CBase URL \u4E0E\u6A21\u578B\u5DF2\u5185\u7F6E\u56FA\u5B9A\u3002",
+    "model.desc": "\u652F\u6301\u9009\u62E9 TypeSafe \u4E0E OpenRouter \u6A21\u578B\u63D0\u4F9B\u5546\uFF0CBase URL \u5DF2\u5185\u7F6E\uFF0C\u53EF\u81EA\u5B9A\u4E49\u6A21\u578B ID \u4E0E API Key\u3002",
     "model.provider": "\u6A21\u578B\u63D0\u4F9B\u5546",
     "model.providerDesc": "\u9009\u62E9\u8981\u4F7F\u7528\u7684\u51B3\u7B56\u6A21\u578B\u670D\u52A1\u5546\uFF08TypeSafe \u6216 OpenRouter\uFF09\u3002",
     "model.active": "\u5F53\u524D\u6A21\u578B",
@@ -363,10 +363,10 @@ var translations = {
     "model.name": "\u914D\u7F6E\u540D\u79F0",
     "model.endpoint": "Base URL",
     "model.baseurlFixedDesc": "\u670D\u52A1\u63A5\u53E3 Base URL\uFF08\u5DF2\u5185\u7F6E\u56FA\u5B9A\uFF0C\u65E0\u9700\u624B\u52A8\u914D\u7F6E\uFF09\u3002",
-    "model.id": "\u5F53\u524D\u6A21\u578B",
-    "model.modelFixedDesc": "\u5F53\u524D\u63D0\u4F9B\u5546\u6307\u5B9A\u7684\u51B3\u7B56\u6A21\u578B\uFF08\u5DF2\u9884\u8BBE\u56FA\u5B9A\uFF09\u3002",
-    "model.idDesc": "\u7559\u7A7A\u65F6\u7531\u670D\u52A1\u9009\u62E9\u9ED8\u8BA4\u51B3\u7B56\u6A21\u578B\uFF0C\u70B9\u51FB\u68C0\u6D4B\u540E\u81EA\u52A8\u586B\u5165\u5B9E\u9645\u54CD\u5E94\u7684\u6A21\u578B ID\u3002",
-    "model.idPlaceholder": "\u7559\u7A7A\u5219\u81EA\u52A8\u68C0\u6D4B",
+    "model.id": "\u6A21\u578B ID",
+    "model.modelFixedDesc": "\u5F53\u524D\u63D0\u4F9B\u5546\u6307\u5B9A\u7684\u51B3\u7B56\u6A21\u578B\uFF08\u53EF\u81EA\u5B9A\u4E49\uFF09\u3002",
+    "model.idDesc": "\u8F93\u5165\u8981\u4F7F\u7528\u7684\u51B3\u7B56\u6A21\u578B ID\uFF0C\u7559\u7A7A\u65F6\u4F7F\u7528\u63D0\u4F9B\u5546\u9ED8\u8BA4\u6A21\u578B\u3002",
+    "model.idPlaceholder": "\u7559\u7A7A\u5219\u4F7F\u7528\u9ED8\u8BA4\u6A21\u578B",
     "model.keyDesc": "\u8F93\u5165\u6240\u9009\u63D0\u4F9B\u5546\u7684 API Key\uFF0C\u4FDD\u5B58\u5728\u672C\u5730\u914D\u7F6E\u4E2D\u3002",
     "model.test": "\u6D4B\u8BD5\u8FDE\u63A5",
     "model.testDesc": "\u53D1\u9001\u5185\u7F6E\u6D4B\u8BD5\u8BF7\u6C42\uFF0C\u9A8C\u8BC1 API Key \u4E0E\u670D\u52A1\u8FDE\u901A\u6027\u3002",
@@ -480,7 +480,7 @@ var translations = {
     "batch.logError": "Failed \xB7 {name}: {error}",
     "batch.allDone": "Classification complete",
     "model.heading": "Model Provider",
-    "model.desc": "Choose between TypeSafe and OpenRouter. Base URL and model are fixed and preconfigured.",
+    "model.desc": "Choose between TypeSafe and OpenRouter. Base URL is preconfigured. Customize model ID and API Key.",
     "model.provider": "Model Provider",
     "model.providerDesc": "Select the decision model provider to use (TypeSafe or OpenRouter).",
     "model.active": "Active model",
@@ -488,10 +488,10 @@ var translations = {
     "model.name": "Profile name",
     "model.endpoint": "Base URL",
     "model.baseurlFixedDesc": "Service Base URL (fixed and preconfigured).",
-    "model.id": "Current Model",
-    "model.modelFixedDesc": "Decision model specified for this provider (preconfigured).",
-    "model.idDesc": "Leave empty to let the service pick its default decision model. Detection fills in the model that answered.",
-    "model.idPlaceholder": "Detected automatically",
+    "model.id": "Model ID",
+    "model.modelFixedDesc": "Decision model specified for this provider (customizable).",
+    "model.idDesc": "Decision model ID to use. Leave empty for provider default.",
+    "model.idPlaceholder": "Leave empty for default",
     "model.keyDesc": "Enter API Key for the selected provider. Saved locally.",
     "model.test": "Test Connection",
     "model.testDesc": "Sends a test request to verify API Key and connectivity.",
@@ -819,15 +819,17 @@ var JevTaggerSettingTab = class extends import_obsidian3.PluginSettingTab {
         this.display();
       });
     });
-    new import_obsidian3.Setting(panel).setName(tr("model.id")).setDesc(tr("model.modelFixedDesc")).addText((text) => {
-      text.setValue(profile.model);
-      text.inputEl.disabled = true;
-      text.inputEl.addClass("is-disabled");
-    });
-    new import_obsidian3.Setting(panel).setName(tr("model.endpoint")).setDesc(tr("model.baseurlFixedDesc")).addText((text) => {
-      text.setValue(profile.endpoint);
-      text.inputEl.disabled = true;
-      text.inputEl.addClass("is-disabled");
+    let modelInput;
+    const defaultModel = PROVIDERS[activeProvider]?.model || "jev-latest";
+    new import_obsidian3.Setting(panel).setName(tr("model.id")).setDesc(tr("model.idDesc")).addText((text) => {
+      modelInput = text.inputEl;
+      text.setPlaceholder(defaultModel).setValue(profile.model).onChange(async (value) => {
+        const val = value.trim();
+        profile.model = val;
+        const found = this.plugin.settings.models.find((m) => m.id === this.plugin.settings.provider);
+        if (found) found.model = val;
+        await this.plugin.saveSettings();
+      });
     });
     let input;
     new import_obsidian3.Setting(panel).setName("API Key").setDesc(tr("model.keyDesc")).addText((text) => {
@@ -857,6 +859,13 @@ var JevTaggerSettingTab = class extends import_obsidian3.PluginSettingTab {
       const controller = this.plugin.createController();
       try {
         const detected = await new ModelClient(profile).detect(controller.signal);
+        if (!profile.model.trim()) {
+          profile.model = detected.model;
+          if (modelInput) modelInput.value = detected.model;
+          const found = this.plugin.settings.models.find((m) => m.id === this.plugin.settings.provider);
+          if (found) found.model = detected.model;
+          await this.plugin.saveSettings();
+        }
         status.setText(tr("model.testOk", { model: detected.model }));
       } catch (error) {
         status.setText(this.plugin.errorText(error));
@@ -1253,7 +1262,7 @@ var JevTaggerPlugin = class extends import_obsidian5.Plugin {
     } else {
       target.name = config.name;
       target.endpoint = config.endpoint;
-      target.model = config.model;
+      target.model = typeof target.model === "string" && target.model.trim() ? target.model : config.model;
       target.apiKey = key;
     }
     this.settings.activeModelId = provider;
@@ -1287,7 +1296,7 @@ var JevTaggerPlugin = class extends import_obsidian5.Plugin {
     if (found) {
       if (found.id === "typesafe" || found.id === "openrouter") {
         found.endpoint = PROVIDERS[found.id].endpoint;
-        found.model = PROVIDERS[found.id].model;
+        found.model = typeof found.model === "string" && found.model.trim() ? found.model : PROVIDERS[found.id].model;
         if (this.settings.apiKeys?.[found.id] !== void 0) {
           found.apiKey = this.settings.apiKeys[found.id];
         }

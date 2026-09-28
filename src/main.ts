@@ -154,7 +154,7 @@ export default class JevTaggerPlugin extends Plugin {
 		} else {
 			target.name = config.name;
 			target.endpoint = config.endpoint;
-			target.model = config.model;
+			target.model = (typeof target.model === "string" && target.model.trim()) ? target.model : config.model;
 			target.apiKey = key;
 		}
 		this.settings.activeModelId = provider;
@@ -198,7 +198,7 @@ export default class JevTaggerPlugin extends Plugin {
 		if (found) {
 			if (found.id === "typesafe" || found.id === "openrouter") {
 				found.endpoint = PROVIDERS[found.id as ModelProvider].endpoint;
-				found.model = PROVIDERS[found.id as ModelProvider].model;
+				found.model = (typeof found.model === "string" && found.model.trim()) ? found.model : PROVIDERS[found.id as ModelProvider].model;
 				if (this.settings.apiKeys?.[found.id as ModelProvider] !== undefined) {
 					found.apiKey = this.settings.apiKeys[found.id as ModelProvider];
 				}
