@@ -85,6 +85,8 @@
 .jev-tag-card-toggle .setting-item-control { margin: 0; gap: 4px; }
 .jev-tag-card-toggle .clickable-icon:hover { color: var(--text-error); }
 .jev-tag-empty-state { padding: 24px 12px; text-align: center; font-size: 13px; color: var(--text-muted); line-height: 1.6; background: var(--background-secondary); border-radius: 8px; }
+.jev-tag-empty-buttons { display: flex; gap: 10px; justify-content: center; margin-top: 14px; }
+.jev-modal-textarea { width: 100%; resize: vertical; font-family: inherit; font-size: 13px; }
 .jev-modal-shell :focus-visible, .jev-settings-container :focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 3px; }
 @media (max-width: 600px) {
  .jev-model-panel .setting-item { flex-direction: column; align-items: stretch; }

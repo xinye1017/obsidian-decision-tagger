@@ -274,3 +274,74 @@ test('removeTagFromVault removes tag from all affected files and updates setting
  assert.deepEqual(plugin.settings.tags, [{ name: 'Web', enabled: true }]);
 });
 
+test('addTagDefinition creates new tag with defaults, strips leading hash, and validates inputs', async () => {
+ const api = load();
+ const plugin = new api.PluginClass();
+ plugin.settings = {
+  language: 'zh',
+  tags: [{ name: 'ExistingTag', enabled: true, instructions: '', matchCriteria: '', otherCriteria: '' }],
+ };
+ plugin.saveSettings = async () => {};
+
+ // 1. Add valid tag with leading #
+ await plugin.addTagDefinition({
+  name: '#Python',
+  instructions: '',
+  matchCriteria: '',
+  otherCriteria: '',
+  enabled: true,
+ });
+
+ assert.equal(plugin.settings.tags.length, 2);
+ const added = plugin.settings.tags[1];
+ assert.equal(added.name, 'Python');
+ assert.equal(added.instructions, '这篇笔记是否主要关于 Python？');
+ assert.equal(added.matchCriteria, 'Python 及相关主题。');
+ assert.equal(added.otherCriteria, '其他主题。');
+ assert.equal(added.enabled, true);
+
+ // 2. Reject empty name
+ await assert.rejects(async () => {
+  await plugin.addTagDefinition({ name: '   ', instructions: '', matchCriteria: '', otherCriteria: '', enabled: true });
+ }, /不能为空/);
+
+ // 3. Reject names with spaces or slashes
+ await assert.rejects(async () => {
+  await plugin.addTagDefinition({ name: 'invalid tag', instructions: '', matchCriteria: '', otherCriteria: '', enabled: true });
+ }, /空格或斜杠/);
+ await assert.rejects(async () => {
+  await plugin.addTagDefinition({ name: 'nested/tag', instructions: '', matchCriteria: '', otherCriteria: '', enabled: true });
+ }, /空格或斜杠/);
+
+ // 4. Reject duplicate tag (case-insensitive)
+ await assert.rejects(async () => {
+  await plugin.addTagDefinition({ name: 'python', instructions: '', matchCriteria: '', otherCriteria: '', enabled: true });
+ }, /已存在/);
+});
+
+test('updateTagDefinition updates existing tag criteria and ignores missing tags', async () => {
+ const api = load();
+ const plugin = new api.PluginClass();
+ plugin.settings = {
+  language: 'en',
+  tags: [{ name: 'ML', instructions: 'old', matchCriteria: 'old match', otherCriteria: 'old other', enabled: true }],
+ };
+ plugin.saveSettings = async () => {};
+
+ const ok = await plugin.updateTagDefinition('ML', {
+  instructions: 'New instructions for ML',
+  matchCriteria: 'New match criteria',
+  otherCriteria: 'New other criteria',
+  enabled: false,
+ });
+ assert.equal(ok, true);
+ assert.equal(plugin.settings.tags[0].instructions, 'New instructions for ML');
+ assert.equal(plugin.settings.tags[0].matchCriteria, 'New match criteria');
+ assert.equal(plugin.settings.tags[0].otherCriteria, 'New other criteria');
+ assert.equal(plugin.settings.tags[0].enabled, false);
+
+ const missing = await plugin.updateTagDefinition('NonExistent', { instructions: 'xyz' });
+ assert.equal(missing, false);
+});
+
+

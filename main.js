@@ -27,7 +27,7 @@ __export(main_exports, {
   default: () => JevTaggerPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian5 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 
 // src/modelClient.ts
 var import_obsidian = require("obsidian");
@@ -266,7 +266,7 @@ var ModelClient = class {
 };
 
 // src/settings.ts
-var import_obsidian3 = require("obsidian");
+var import_obsidian4 = require("obsidian");
 
 // src/batchTagModal.ts
 var import_obsidian2 = require("obsidian");
@@ -296,6 +296,7 @@ var translations = {
     "command.autoApply": "\u4E00\u952E\u81EA\u52A8\u5E94\u7528\u9AD8\u7F6E\u4FE1\u6807\u7B7E\u5230\u5F53\u524D\u7B14\u8BB0 (Auto-apply Tags to Active Note)",
     "command.batchTagAll": "\u6279\u91CF\u626B\u63CF\u7B14\u8BB0\u5E76\u6DFB\u52A0\u9AD8\u7F6E\u4FE1\u6807\u7B7E (Batch Tag Notes)",
     "command.syncVaultTags": "\u81EA\u52A8\u68C0\u6D4B\u5E76\u540C\u6B65\u77E5\u8BC6\u5E93\u6807\u7B7E\u5E93 (Detect and Sync Vault Tags)",
+    "command.createTag": "\u65B0\u5EFA\u6807\u7B7E\u89C4\u5219 (Create Tag Rule)",
     "menu.suggestTags": "decision tagger: \u667A\u80FD\u6807\u7B7E\u63A8\u8350",
     "settings.title": "decision tagger \u8BBE\u7F6E",
     "settings.subtitle": "\u4ECE\u7B14\u8BB0\u5230\u6807\u7B7E\uFF0C\u8BA9\u6BCF\u4E00\u6B65\u5206\u7C7B\u90FD\u6E05\u6670\u53EF\u89C1\u3002",
@@ -318,9 +319,11 @@ var translations = {
     "settings.tagLibrary.desc": "\u5F53\u524D\u7BA1\u7406\u7684\u5206\u7C7B\u6807\u7B7E\u5217\u8868\u3002\u70B9\u51FB\u5F00\u5173\u53EF\u968F\u65F6\u542F\u7528\u6216\u5173\u95ED\u7279\u5B9A\u6807\u7B7E\u7684\u81EA\u52A8\u8BC4\u4F30\u3002",
     "settings.tagLibrary.tagName": "#{name}",
     "settings.tagLibrary.stats": "\u5171 {total} \u4E2A\u6807\u7B7E\uFF0C\u5DF2\u542F\u7528 {enabled} \u4E2A",
+    "settings.tagLibrary.addTag": "+ \u65B0\u5EFA\u6807\u7B7E",
     "settings.tagLibrary.enableAll": "\u5168\u90E8\u542F\u7528",
     "settings.tagLibrary.disableAll": "\u5168\u90E8\u7981\u7528",
-    "settings.tagLibrary.empty": "\u89C4\u5219\u5E93\u6682\u65E0\u6807\u7B7E\u3002\u70B9\u51FB\u300C\u626B\u63CF\u6807\u7B7E\u5E93\u300D\uFF0C\u5BFC\u5165\u77E5\u8BC6\u5E93\u5DF2\u6709\u6807\u7B7E\u3002",
+    "settings.tagLibrary.empty": "\u89C4\u5219\u5E93\u6682\u65E0\u6807\u7B7E\u3002\u70B9\u51FB\u300C\u626B\u63CF\u6807\u7B7E\u5E93\u300D\uFF0C\u5BFC\u5165\u77E5\u8BC6\u5E93\u5DF2\u6709\u6807\u7B7E\uFF0C\u6216\u70B9\u51FB\u300C\u65B0\u5EFA\u6807\u7B7E\u300D\u624B\u52A8\u521B\u5EFA\u3002",
+    "settings.tagLibrary.editTooltip": "\u7F16\u8F91\u6B64\u6807\u7B7E\u5224\u65AD\u89C4\u5219",
     "settings.tagLibrary.deleteTooltip": "\u4ECE\u89C4\u5219\u5E93\u53CA\u6240\u6709\u7B14\u8BB0\u4E2D\u5220\u9664\u6B64\u6807\u7B7E",
     "settings.tagLibrary.deleteConfirmTitle": "\u5220\u9664\u6807\u7B7E #{tag}",
     "settings.tagLibrary.deleteConfirmDesc": "\u786E\u5B9A\u8981\u5F7B\u5E95\u5220\u9664\u6807\u7B7E #{tag} \u5417\uFF1F\u6B64\u64CD\u4F5C\u5C06\u4ECE\u77E5\u8BC6\u5E93\u7684\u6240\u6709\u7B14\u8BB0\u4E2D\u79FB\u9664\u8BE5\u6807\u7B7E\uFF0C\u5E76\u4ECE\u89C4\u5219\u5E93\u4E2D\u5220\u9664\u3002",
@@ -329,6 +332,28 @@ var translations = {
     "settings.tagLibrary.deleting": "\u6B63\u5728\u5220\u9664\u5E76\u6E05\u7406\u7B14\u8BB0\u2026",
     "settings.tagLibrary.deleteSuccess": "\u5DF2\u6210\u529F\u4ECE {count} \u7BC7\u7B14\u8BB0\u4E2D\u79FB\u9664\u6807\u7B7E #{tag}\uFF0C\u5E76\u4ECE\u89C4\u5219\u5E93\u4E2D\u5220\u9664\uFF01",
     "settings.tagLibrary.deleteFailed": "\u5220\u9664\u6807\u7B7E\u5931\u8D25: {error}",
+    "tagModal.createTitle": "\u65B0\u5EFA\u6807\u7B7E\u89C4\u5219",
+    "tagModal.editTitle": "\u7F16\u8F91\u6807\u7B7E #{tag}",
+    "tagModal.name": "\u6807\u7B7E\u540D\u79F0",
+    "tagModal.nameDesc": "\u8981\u5206\u7C7B\u8BC4\u4F30\u7684\u6807\u7B7E\u540D\uFF08\u65E0\u9700\u8F93\u5165 # \u524D\u7F00\uFF0C\u4E0D\u53EF\u5305\u542B\u7A7A\u683C\u6216\u659C\u6760\uFF09\u3002",
+    "tagModal.namePlaceholder": "\u4F8B\u5982\uFF1AAI\u3001\u8BFB\u4E66\u7B14\u8BB0\u3001\u6280\u672F\u67B6\u6784",
+    "tagModal.instructions": "\u5224\u5B9A\u95EE\u9898 / \u63D0\u793A\u8BCD",
+    "tagModal.instructionsDesc": "\u5F15\u5BFC\u6A21\u578B\u8FDB\u884C\u5224\u5B9A\u7684\u5177\u4F53\u95EE\u9898\u3002\u7559\u7A7A\u5C06\u81EA\u52A8\u6839\u636E\u6807\u7B7E\u540D\u751F\u6210\u9ED8\u8BA4\u5224\u5B9A\u95EE\u9898\u3002",
+    "tagModal.instructionsPlaceholder": "\u7559\u7A7A\u81EA\u52A8\u751F\u6210\uFF1A\u8FD9\u7BC7\u7B14\u8BB0\u662F\u5426\u4E3B\u8981\u5173\u4E8E [\u6807\u7B7E]\uFF1F",
+    "tagModal.matchCriteria": "\u5224\u5B9A\u5339\u914D\u7279\u5F81 (Match Criteria)",
+    "tagModal.matchCriteriaDesc": "\u7B14\u8BB0\u7B26\u5408\u8BE5\u6807\u7B7E\u65F6\u6240\u5177\u5907\u7684\u4E3B\u9898\u6216\u5185\u5BB9\u7279\u5F81\u3002\u7559\u7A7A\u81EA\u52A8\u751F\u6210\u9ED8\u8BA4\u5339\u914D\u7279\u5F81\u3002",
+    "tagModal.matchCriteriaPlaceholder": "\u7559\u7A7A\u81EA\u52A8\u751F\u6210\uFF1A[\u6807\u7B7E] \u53CA\u76F8\u5173\u4E3B\u9898\u4E0E\u5B9E\u8DF5\u3002",
+    "tagModal.otherCriteria": "\u5224\u5B9A\u6392\u9664\u7279\u5F81 (Other Criteria)",
+    "tagModal.otherCriteriaDesc": "\u7B14\u8BB0\u4E0D\u7B26\u5408\u8BE5\u6807\u7B7E\u65F6\u7684\u4E3B\u9898\u7279\u5F81\u3002\u7559\u7A7A\u9ED8\u8BA4\u4E3A\u300C\u5176\u4ED6\u4E3B\u9898\u300D\u3002",
+    "tagModal.otherCriteriaPlaceholder": "\u7559\u7A7A\u9ED8\u8BA4\u4E3A\uFF1A\u5176\u4ED6\u4E3B\u9898\u3002",
+    "tagModal.createButton": "\u521B\u5EFA\u6807\u7B7E",
+    "tagModal.saveButton": "\u4FDD\u5B58\u4FEE\u6539",
+    "tagModal.cancelButton": "\u53D6\u6D88",
+    "tagModal.errorEmptyName": "\u6807\u7B7E\u540D\u79F0\u4E0D\u80FD\u4E3A\u7A7A\uFF01",
+    "tagModal.errorInvalidName": "\u6807\u7B7E\u540D\u79F0\u4E0D\u80FD\u5305\u542B\u7A7A\u683C\u6216\u659C\u6760\uFF01",
+    "tagModal.errorDuplicateName": "\u6807\u7B7E #{tag} \u5DF2\u5B58\u5728\u4E8E\u89C4\u5219\u5E93\u4E2D\uFF01",
+    "tagModal.createSuccess": "\u5DF2\u6210\u529F\u521B\u5EFA\u6807\u7B7E #{tag}\uFF01",
+    "tagModal.editSuccess": "\u5DF2\u6210\u529F\u66F4\u65B0\u6807\u7B7E #{tag} \u7684\u5224\u65AD\u89C4\u5219\uFF01",
     "tagSuggest.title": "{name}",
     "tagSuggest.loadingSubtitle": "\u6B63\u5728\u901A\u8FC7\u5F53\u524D\u6A21\u578B\u8BC4\u4F30\u5DF2\u542F\u7528\u7684\u6807\u7B7E\u3002",
     "tagSuggest.loading": "AI \u51B3\u7B56\u5206\u6790\u4E2D...",
@@ -429,6 +454,7 @@ var translations = {
     "command.autoApply": "Auto-apply tags to the active note",
     "command.batchTagAll": "Batch scan notes and add high-confidence tags",
     "command.syncVaultTags": "Detect and sync vault tags",
+    "command.createTag": "Create Tag Rule",
     "menu.suggestTags": "decision tagger: Suggest Tags",
     "settings.title": "decision tagger Settings",
     "settings.subtitle": "From notes to tags, with a clear view of every step.",
@@ -451,9 +477,11 @@ var translations = {
     "settings.tagLibrary.desc": "Target tags for evaluation. Toggle individual tags on or off as needed.",
     "settings.tagLibrary.tagName": "#{name}",
     "settings.tagLibrary.stats": "{total} tags total, {enabled} enabled",
+    "settings.tagLibrary.addTag": "+ New Tag",
     "settings.tagLibrary.enableAll": "Enable All",
     "settings.tagLibrary.disableAll": "Disable All",
-    "settings.tagLibrary.empty": "No tags yet. Use \u201CSync vault tags\u201D to import tags already used in your vault.",
+    "settings.tagLibrary.empty": "No tags yet. Use \u201CSync vault tags\u201D to import tags already used in your vault, or click \u201CNew Tag\u201D to create one manually.",
+    "settings.tagLibrary.editTooltip": "Edit classification criteria for this tag",
     "settings.tagLibrary.deleteTooltip": "Delete this tag from the rule library and all notes",
     "settings.tagLibrary.deleteConfirmTitle": "Delete Tag #{tag}",
     "settings.tagLibrary.deleteConfirmDesc": "Are you sure you want to delete tag #{tag}? This will remove the tag from all notes across your vault and delete it from the rule library.",
@@ -462,6 +490,28 @@ var translations = {
     "settings.tagLibrary.deleting": "Deleting and cleaning notes\u2026",
     "settings.tagLibrary.deleteSuccess": "Successfully removed tag #{tag} from {count} notes and deleted it from the library!",
     "settings.tagLibrary.deleteFailed": "Failed to delete tag: {error}",
+    "tagModal.createTitle": "New Tag Rule",
+    "tagModal.editTitle": "Edit Tag #{tag}",
+    "tagModal.name": "Tag Name",
+    "tagModal.nameDesc": "The tag name to evaluate (without leading #, no spaces or slashes).",
+    "tagModal.namePlaceholder": "e.g. AI, BookNotes, Architecture",
+    "tagModal.instructions": "Evaluation Question / Prompt",
+    "tagModal.instructionsDesc": "Question to guide the model. Leave empty to auto-generate default question.",
+    "tagModal.instructionsPlaceholder": "Leave blank to auto-generate: Is this note primarily about [tag]?",
+    "tagModal.matchCriteria": "Match Criteria",
+    "tagModal.matchCriteriaDesc": "Topic characteristics when the note matches this tag. Leave empty for default.",
+    "tagModal.matchCriteriaPlaceholder": "Leave blank to auto-generate: [tag] and related topics.",
+    "tagModal.otherCriteria": "Other / Negative Criteria",
+    "tagModal.otherCriteriaDesc": "Topic characteristics when the note does not match this tag. Leave empty for default.",
+    "tagModal.otherCriteriaPlaceholder": "Leave blank to default: Other topics.",
+    "tagModal.createButton": "Create Tag",
+    "tagModal.saveButton": "Save Changes",
+    "tagModal.cancelButton": "Cancel",
+    "tagModal.errorEmptyName": "Tag name cannot be empty!",
+    "tagModal.errorInvalidName": "Tag name cannot contain spaces or slashes!",
+    "tagModal.errorDuplicateName": "Tag #{tag} already exists in the library!",
+    "tagModal.createSuccess": "Successfully created tag #{tag}!",
+    "tagModal.editSuccess": "Successfully updated criteria for tag #{tag}!",
     "tagSuggest.title": "{name}",
     "tagSuggest.loadingSubtitle": "Evaluating enabled tags with the selected model.",
     "tagSuggest.loading": "Running AI decision analysis...",
@@ -796,6 +846,101 @@ var BatchTagModal = class extends import_obsidian2.Modal {
   }
 };
 
+// src/tagModal.ts
+var import_obsidian3 = require("obsidian");
+var TagModal = class extends import_obsidian3.Modal {
+  constructor(app, plugin, tag, onSaved = () => {
+  }) {
+    super(app);
+    this.plugin = plugin;
+    this.tag = tag;
+    this.onSaved = onSaved;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    const lang = this.plugin.settings.language;
+    const isEdit = !!this.tag;
+    contentEl.createEl("h2", {
+      text: isEdit ? t(lang, "tagModal.editTitle", { tag: this.tag.name }) : t(lang, "tagModal.createTitle")
+    });
+    let name = this.tag ? this.tag.name : "";
+    let instructions = this.tag ? this.tag.instructions : "";
+    let matchCriteria = this.tag ? this.tag.matchCriteria : "";
+    let otherCriteria = this.tag ? this.tag.otherCriteria : "";
+    const nameSetting = new import_obsidian3.Setting(contentEl).setName(t(lang, "tagModal.name")).setDesc(t(lang, "tagModal.nameDesc"));
+    nameSetting.addText((text) => {
+      text.setPlaceholder(t(lang, "tagModal.namePlaceholder")).setValue(name).onChange((val) => {
+        name = val;
+      });
+      if (isEdit) {
+        text.setDisabled(true);
+      }
+    });
+    new import_obsidian3.Setting(contentEl).setName(t(lang, "tagModal.instructions")).setDesc(t(lang, "tagModal.instructionsDesc")).addTextArea((ta) => {
+      ta.setPlaceholder(t(lang, "tagModal.instructionsPlaceholder")).setValue(instructions).onChange((val) => {
+        instructions = val;
+      });
+      ta.inputEl.rows = 2;
+      ta.inputEl.addClass("jev-modal-textarea");
+    });
+    new import_obsidian3.Setting(contentEl).setName(t(lang, "tagModal.matchCriteria")).setDesc(t(lang, "tagModal.matchCriteriaDesc")).addTextArea((ta) => {
+      ta.setPlaceholder(t(lang, "tagModal.matchCriteriaPlaceholder")).setValue(matchCriteria).onChange((val) => {
+        matchCriteria = val;
+      });
+      ta.inputEl.rows = 2;
+      ta.inputEl.addClass("jev-modal-textarea");
+    });
+    new import_obsidian3.Setting(contentEl).setName(t(lang, "tagModal.otherCriteria")).setDesc(t(lang, "tagModal.otherCriteriaDesc")).addTextArea((ta) => {
+      ta.setPlaceholder(t(lang, "tagModal.otherCriteriaPlaceholder")).setValue(otherCriteria).onChange((val) => {
+        otherCriteria = val;
+      });
+      ta.inputEl.rows = 2;
+      ta.inputEl.addClass("jev-modal-textarea");
+    });
+    const btnContainer = contentEl.createDiv({ cls: "modal-button-container" });
+    const cancelBtn = btnContainer.createEl("button", {
+      text: t(lang, "tagModal.cancelButton")
+    });
+    cancelBtn.onclick = () => this.close();
+    const submitBtn = btnContainer.createEl("button", {
+      cls: "mod-cta",
+      text: isEdit ? t(lang, "tagModal.saveButton") : t(lang, "tagModal.createButton")
+    });
+    submitBtn.onclick = async () => {
+      submitBtn.disabled = true;
+      try {
+        if (isEdit && this.tag) {
+          await this.plugin.updateTagDefinition(this.tag.name, {
+            instructions,
+            matchCriteria,
+            otherCriteria
+          });
+          new import_obsidian3.Notice(t(lang, "tagModal.editSuccess", { tag: this.tag.name }));
+        } else {
+          const cleanName = name.replace(/^#/, "").trim();
+          await this.plugin.addTagDefinition({
+            name: cleanName,
+            instructions,
+            matchCriteria,
+            otherCriteria,
+            enabled: true
+          });
+          new import_obsidian3.Notice(t(lang, "tagModal.createSuccess", { tag: cleanName }));
+        }
+        this.onSaved();
+        this.close();
+      } catch (err) {
+        new import_obsidian3.Notice(err?.message || String(err));
+        submitBtn.disabled = false;
+      }
+    };
+  }
+  onClose() {
+    const { contentEl } = this;
+    contentEl.empty();
+  }
+};
+
 // src/settings.ts
 var DEFAULT_SETTINGS = {
   provider: "typesafe",
@@ -812,7 +957,7 @@ var DEFAULT_SETTINGS = {
   confidenceThreshold: 0.7,
   tags: []
 };
-var JevTaggerSettingTab = class extends import_obsidian3.PluginSettingTab {
+var JevTaggerSettingTab = class extends import_obsidian4.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -820,11 +965,11 @@ var JevTaggerSettingTab = class extends import_obsidian3.PluginSettingTab {
   renderModels(container) {
     const lang = this.plugin.settings.language;
     const tr = (key, params) => t(lang, key, params);
-    new import_obsidian3.Setting(container).setHeading().setName(tr("model.heading")).setDesc(tr("model.desc"));
+    new import_obsidian4.Setting(container).setHeading().setName(tr("model.heading")).setDesc(tr("model.desc"));
     const panel = container.createDiv({ cls: "jev-model-panel" });
     const activeProvider = this.plugin.settings.provider || "typesafe";
     const profile = this.plugin.activeModel;
-    new import_obsidian3.Setting(panel).setName(tr("model.provider")).setDesc(tr("model.providerDesc")).addDropdown((dropdown) => {
+    new import_obsidian4.Setting(panel).setName(tr("model.provider")).setDesc(tr("model.providerDesc")).addDropdown((dropdown) => {
       dropdown.addOption("typesafe", "TypeSafe");
       dropdown.addOption("openrouter", "OpenRouter");
       dropdown.setValue(activeProvider).onChange(async (val) => {
@@ -837,7 +982,7 @@ var JevTaggerSettingTab = class extends import_obsidian3.PluginSettingTab {
     });
     let modelInput;
     const defaultModel = PROVIDERS[activeProvider]?.model || "jev-latest";
-    new import_obsidian3.Setting(panel).setName(tr("model.id")).setDesc(tr("model.idDesc")).addText((text) => {
+    new import_obsidian4.Setting(panel).setName(tr("model.id")).setDesc(tr("model.idDesc")).addText((text) => {
       modelInput = text.inputEl;
       text.setPlaceholder(defaultModel).setValue(profile.model).onChange(async (value) => {
         const val = value.trim();
@@ -848,7 +993,7 @@ var JevTaggerSettingTab = class extends import_obsidian3.PluginSettingTab {
       });
     });
     let input;
-    new import_obsidian3.Setting(panel).setName("API Key").setDesc(tr("model.keyDesc")).addText((text) => {
+    new import_obsidian4.Setting(panel).setName("API Key").setDesc(tr("model.keyDesc")).addText((text) => {
       input = text.inputEl;
       input.type = "password";
       input.autocomplete = "off";
@@ -869,7 +1014,7 @@ var JevTaggerSettingTab = class extends import_obsidian3.PluginSettingTab {
       button.setIcon(input.type === "password" ? "eye-off" : "eye");
     }));
     const status = panel.createDiv({ cls: "jev-model-status", attr: { role: "status", "aria-live": "polite" } });
-    new import_obsidian3.Setting(panel).setDesc(tr("model.testDesc")).addButton((button) => button.setButtonText(tr("model.test")).setCta().onClick(async () => {
+    new import_obsidian4.Setting(panel).setDesc(tr("model.testDesc")).addButton((button) => button.setButtonText(tr("model.test")).setCta().onClick(async () => {
       button.setDisabled(true);
       status.setText(tr("model.testing"));
       const controller = this.plugin.createController();
@@ -906,8 +1051,8 @@ var JevTaggerSettingTab = class extends import_obsidian3.PluginSettingTab {
       text: t(lang, "settings.subtitle"),
       cls: "setting-item-description"
     });
-    new import_obsidian3.Setting(containerEl).setHeading().setName(t(lang, "settings.section.general"));
-    new import_obsidian3.Setting(containerEl).setName(t(lang, "settings.language.name")).setDesc(t(lang, "settings.language.desc")).addDropdown((dropdown) => {
+    new import_obsidian4.Setting(containerEl).setHeading().setName(t(lang, "settings.section.general"));
+    new import_obsidian4.Setting(containerEl).setName(t(lang, "settings.language.name")).setDesc(t(lang, "settings.language.desc")).addDropdown((dropdown) => {
       dropdown.selectEl.setAttribute("aria-label", t(lang, "settings.language.name"));
       LANGUAGES.forEach((key) => {
         dropdown.addOption(key, LANGUAGE_OPTIONS[key]);
@@ -919,7 +1064,7 @@ var JevTaggerSettingTab = class extends import_obsidian3.PluginSettingTab {
       });
     });
     this.renderModels(containerEl);
-    const thresholdSetting = new import_obsidian3.Setting(containerEl).setName(t(lang, "settings.threshold.name")).setDesc(t(lang, "settings.threshold.desc"));
+    const thresholdSetting = new import_obsidian4.Setting(containerEl).setName(t(lang, "settings.threshold.name")).setDesc(t(lang, "settings.threshold.desc"));
     const currentPct = Math.round(this.plugin.settings.confidenceThreshold * 100);
     const badgeEl = thresholdSetting.controlEl.createSpan({
       cls: "jev-threshold-badge",
@@ -933,19 +1078,19 @@ var JevTaggerSettingTab = class extends import_obsidian3.PluginSettingTab {
       })
     );
     thresholdSetting.controlEl.prepend(badgeEl);
-    new import_obsidian3.Setting(containerEl).setHeading().setName(t(lang, "settings.section.actions"));
-    new import_obsidian3.Setting(containerEl).setName(t(lang, "settings.batch.name")).setDesc(t(lang, "settings.batch.desc")).addButton(
+    new import_obsidian4.Setting(containerEl).setHeading().setName(t(lang, "settings.section.actions"));
+    new import_obsidian4.Setting(containerEl).setName(t(lang, "settings.batch.name")).setDesc(t(lang, "settings.batch.desc")).addButton(
       (btn) => btn.setButtonText(t(lang, "settings.batch.button")).setCta().onClick(() => {
         new BatchTagModal(this.app, this.plugin).open();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName(t(lang, "settings.sync.name")).setDesc(t(lang, "settings.sync.desc")).addButton(
+    new import_obsidian4.Setting(containerEl).setName(t(lang, "settings.sync.name")).setDesc(t(lang, "settings.sync.desc")).addButton(
       (btn) => btn.setButtonText(t(lang, "settings.sync.button")).onClick(async () => {
         await this.plugin.detectAndSyncVaultTags();
         this.display();
       })
     );
-    new import_obsidian3.Setting(containerEl).setHeading().setName(t(lang, "settings.section.tags")).setDesc(t(lang, "settings.tagLibrary.desc"));
+    new import_obsidian4.Setting(containerEl).setHeading().setName(t(lang, "settings.section.tags")).setDesc(t(lang, "settings.tagLibrary.desc"));
     const tags = this.plugin.settings.tags;
     const totalTags = tags.length;
     if (totalTags > 0) {
@@ -956,6 +1101,13 @@ var JevTaggerSettingTab = class extends import_obsidian3.PluginSettingTab {
         text: t(lang, "settings.tagLibrary.stats", { total: totalTags, enabled: enabledCount })
       });
       const toolbarButtons = toolbar.createDiv({ cls: "jev-tag-toolbar-buttons" });
+      const addBtn = toolbarButtons.createEl("button", {
+        cls: "mod-cta jev-tag-action-btn",
+        text: t(lang, "settings.tagLibrary.addTag")
+      });
+      addBtn.onclick = () => {
+        new TagModal(this.app, this.plugin, void 0, () => this.display()).open();
+      };
       const enableAllBtn = toolbarButtons.createEl("button", {
         cls: "jev-tag-action-btn",
         text: t(lang, "settings.tagLibrary.enableAll")
@@ -980,13 +1132,17 @@ var JevTaggerSettingTab = class extends import_obsidian3.PluginSettingTab {
           cls: `jev-tag-card ${tag.enabled ? "is-enabled" : "is-disabled"}`
         });
         const chip = tagCard.createDiv({ cls: "jev-tag-card-chip" });
+        chip.style.cursor = "pointer";
+        chip.onclick = () => {
+          new TagModal(this.app, this.plugin, tag, () => this.display()).open();
+        };
         chip.createSpan({ cls: "jev-tag-hash", text: "#" });
         const nameEl = chip.createSpan({ cls: "jev-tag-name", text: tag.name });
         if (tag.instructions) {
           nameEl.title = tag.instructions;
         }
         const toggleContainer = tagCard.createDiv({ cls: "jev-tag-card-toggle" });
-        new import_obsidian3.Setting(toggleContainer).addToggle((toggle) => {
+        new import_obsidian4.Setting(toggleContainer).addToggle((toggle) => {
           toggle.toggleEl.setAttribute("aria-label", `#${tag.name}`);
           toggle.setValue(tag.enabled).onChange(async (val) => {
             tags[index].enabled = val;
@@ -997,6 +1153,12 @@ var JevTaggerSettingTab = class extends import_obsidian3.PluginSettingTab {
             statsEl.setText(
               t(lang, "settings.tagLibrary.stats", { total: totalTags, enabled: updatedEnabled })
             );
+          });
+        }).addExtraButton((btn) => {
+          btn.setIcon("pencil").setTooltip(t(lang, "settings.tagLibrary.editTooltip")).onClick(() => {
+            new TagModal(this.app, this.plugin, tag, () => {
+              this.display();
+            }).open();
           });
         }).addExtraButton((btn) => {
           btn.setIcon("trash-2").setTooltip(t(lang, "settings.tagLibrary.deleteTooltip")).onClick(() => {
@@ -1012,10 +1174,25 @@ var JevTaggerSettingTab = class extends import_obsidian3.PluginSettingTab {
         cls: "jev-tag-empty-text",
         text: t(lang, "settings.tagLibrary.empty")
       });
+      const emptyBtns = emptyEl.createDiv({ cls: "jev-tag-empty-buttons" });
+      const createBtn = emptyBtns.createEl("button", {
+        cls: "mod-cta",
+        text: t(lang, "settings.tagLibrary.addTag")
+      });
+      createBtn.onclick = () => {
+        new TagModal(this.app, this.plugin, void 0, () => this.display()).open();
+      };
+      const syncBtn = emptyBtns.createEl("button", {
+        text: t(lang, "settings.sync.button")
+      });
+      syncBtn.onclick = async () => {
+        await this.plugin.detectAndSyncVaultTags();
+        this.display();
+      };
     }
   }
 };
-var DeleteTagConfirmModal = class extends import_obsidian3.Modal {
+var DeleteTagConfirmModal = class extends import_obsidian4.Modal {
   constructor(app, plugin, tag, onDeleted) {
     super(app);
     this.plugin = plugin;
@@ -1046,7 +1223,7 @@ var DeleteTagConfirmModal = class extends import_obsidian3.Modal {
       confirmBtn.setText(t(lang, "settings.tagLibrary.deleting"));
       try {
         const result = await this.plugin.removeTagFromVault(this.tag.name);
-        new import_obsidian3.Notice(
+        new import_obsidian4.Notice(
           t(lang, "settings.tagLibrary.deleteSuccess", {
             tag: this.tag.name,
             count: result.affectedNotes
@@ -1055,7 +1232,7 @@ var DeleteTagConfirmModal = class extends import_obsidian3.Modal {
         this.onDeleted();
         this.close();
       } catch (err) {
-        new import_obsidian3.Notice(
+        new import_obsidian4.Notice(
           t(lang, "settings.tagLibrary.deleteFailed", {
             error: err?.message || String(err)
           })
@@ -1072,8 +1249,8 @@ var DeleteTagConfirmModal = class extends import_obsidian3.Modal {
 };
 
 // src/tagSuggestModal.ts
-var import_obsidian4 = require("obsidian");
-var TagSuggestModal = class extends import_obsidian4.Modal {
+var import_obsidian5 = require("obsidian");
+var TagSuggestModal = class extends import_obsidian5.Modal {
   constructor(app, plugin, file) {
     super(app);
     this.plugin = plugin;
@@ -1194,7 +1371,7 @@ var TagSuggestModal = class extends import_obsidian4.Modal {
         if (await this.plugin.addTagToFile(this.file, tag)) added++;
         this.existingTags.add(tag);
       }
-      if (added) new import_obsidian4.Notice(this.tr("notice.applyAllSuccess", { count: added }));
+      if (added) new import_obsidian5.Notice(this.tr("notice.applyAllSuccess", { count: added }));
     } catch (error) {
       this.error = this.tr("result.writeFailed", { error: this.plugin.errorText(error) });
     } finally {
@@ -1237,7 +1414,7 @@ var LEGACY_DEFAULT_TAG_RULES = [
     otherCriteria: "General software development, database administration, UI styling, or personal notes."
   }
 ];
-var JevTaggerPlugin = class extends import_obsidian5.Plugin {
+var JevTaggerPlugin = class extends import_obsidian6.Plugin {
   constructor() {
     super(...arguments);
     this.batchRunning = false;
@@ -1253,7 +1430,7 @@ var JevTaggerPlugin = class extends import_obsidian5.Plugin {
       if (activeFile) {
         new TagSuggestModal(this.app, this, activeFile).open();
       } else {
-        new import_obsidian5.Notice(this.tr("notice.noActiveFile"));
+        new import_obsidian6.Notice(this.tr("notice.noActiveFile"));
       }
     });
     this.addCommand({
@@ -1298,9 +1475,16 @@ var JevTaggerPlugin = class extends import_obsidian5.Plugin {
         await this.detectAndSyncVaultTags();
       }
     });
+    this.addCommand({
+      id: "jev-create-tag",
+      name: this.tr("command.createTag"),
+      callback: () => {
+        new TagModal(this.app, this).open();
+      }
+    });
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
-        if (file instanceof import_obsidian5.TFile && file.extension === "md") {
+        if (file instanceof import_obsidian6.TFile && file.extension === "md") {
           menu.addItem((item) => {
             item.setTitle(this.tr("menu.suggestTags")).setIcon("tags").onClick(() => {
               new TagSuggestModal(this.app, this, file).open();
@@ -1451,14 +1635,14 @@ var JevTaggerPlugin = class extends import_obsidian5.Plugin {
    * Auto applies tags that meet the threshold
    */
   async autoApplyTags(file) {
-    new import_obsidian5.Notice(this.tr("notice.analyzing", { name: file.basename }));
+    new import_obsidian6.Notice(this.tr("notice.analyzing", { name: file.basename }));
     const controller = this.createController();
     try {
       const session = this.createEvaluationSession();
       const results = await this.evaluateFile(file, session, controller.signal);
       const eligible = results.filter((r) => isEligible(r, session.threshold));
       if (eligible.length === 0) {
-        new import_obsidian5.Notice(
+        new import_obsidian6.Notice(
           this.tr("notice.noEligibleTags", {
             threshold: Math.round(this.settings.confidenceThreshold * 100)
           })
@@ -1472,12 +1656,12 @@ var JevTaggerPlugin = class extends import_obsidian5.Plugin {
         if (added) addedCount++;
       }
       if (addedCount > 0) {
-        new import_obsidian5.Notice(this.tr("notice.autoApplySuccess", { count: addedCount }));
+        new import_obsidian6.Notice(this.tr("notice.autoApplySuccess", { count: addedCount }));
       } else {
-        new import_obsidian5.Notice(this.tr("notice.tagsAlreadyExist"));
+        new import_obsidian6.Notice(this.tr("notice.tagsAlreadyExist"));
       }
     } catch (e) {
-      new import_obsidian5.Notice(this.tr("notice.autoApplyFailed", { error: this.errorText(e) }));
+      new import_obsidian6.Notice(this.tr("notice.autoApplyFailed", { error: this.errorText(e) }));
     } finally {
       this.releaseController(controller);
     }
@@ -1576,7 +1760,7 @@ var JevTaggerPlugin = class extends import_obsidian5.Plugin {
       const cache = this.app.metadataCache?.getFileCache ? this.app.metadataCache.getFileCache(file) : null;
       let hasTag = false;
       if (cache) {
-        const tags = (0, import_obsidian5.getAllTags)(cache) || [];
+        const tags = (0, import_obsidian6.getAllTags)(cache) || [];
         hasTag = tags.some((t2) => (typeof t2 === "string" ? t2 : t2?.tag || "").replace(/^#/, "").trim() === cleanTag);
       } else {
         hasTag = true;
@@ -1598,11 +1782,11 @@ var JevTaggerPlugin = class extends import_obsidian5.Plugin {
     const allTagsMap = /* @__PURE__ */ Object.create(null);
     for (const file of this.app.vault.getMarkdownFiles()) {
       const cache = this.app.metadataCache.getFileCache(file);
-      for (const tag of cache ? (0, import_obsidian5.getAllTags)(cache) || [] : []) allTagsMap[tag] = (allTagsMap[tag] || 0) + 1;
+      for (const tag of cache ? (0, import_obsidian6.getAllTags)(cache) || [] : []) allTagsMap[tag] = (allTagsMap[tag] || 0) + 1;
     }
     const tagKeys = Object.keys(allTagsMap);
     if (tagKeys.length === 0) {
-      new import_obsidian5.Notice(this.tr("notice.noVaultTags"));
+      new import_obsidian6.Notice(this.tr("notice.noVaultTags"));
       return { added: 0, total: 0 };
     }
     let addedCount = 0;
@@ -1625,7 +1809,63 @@ var JevTaggerPlugin = class extends import_obsidian5.Plugin {
       }
     }
     await this.saveSettings();
-    new import_obsidian5.Notice(this.tr("notice.vaultTagsSynced", { total: sortedTags.length, added: addedCount }));
+    new import_obsidian6.Notice(this.tr("notice.vaultTagsSynced", { total: sortedTags.length, added: addedCount }));
     return { added: addedCount, total: sortedTags.length };
+  }
+  /**
+   * Adds a new tag definition to settings
+   */
+  async addTagDefinition(tag) {
+    const cleanName = tag.name.replace(/^#/, "").trim();
+    if (!cleanName) {
+      throw new Error(this.tr("tagModal.errorEmptyName"));
+    }
+    if (/\s|\//.test(cleanName)) {
+      throw new Error(this.tr("tagModal.errorInvalidName"));
+    }
+    const exists = this.settings.tags.some(
+      (t2) => t2.name.toLowerCase() === cleanName.toLowerCase()
+    );
+    if (exists) {
+      throw new Error(this.tr("tagModal.errorDuplicateName", { tag: cleanName }));
+    }
+    const lang = this.settings.language;
+    const defaultInstructions = lang === "zh" ? `\u8FD9\u7BC7\u7B14\u8BB0\u662F\u5426\u4E3B\u8981\u5173\u4E8E ${cleanName}\uFF1F` : `Is this note primarily about ${cleanName}?`;
+    const defaultMatchCriteria = lang === "zh" ? `${cleanName} \u53CA\u76F8\u5173\u4E3B\u9898\u3002` : `${cleanName} and related topics.`;
+    const defaultOtherCriteria = lang === "zh" ? "\u5176\u4ED6\u4E3B\u9898\u3002" : "Other topics.";
+    this.settings.tags.push({
+      name: cleanName,
+      instructions: tag.instructions?.trim() || defaultInstructions,
+      matchCriteria: tag.matchCriteria?.trim() || defaultMatchCriteria,
+      otherCriteria: tag.otherCriteria?.trim() || defaultOtherCriteria,
+      enabled: tag.enabled !== void 0 ? tag.enabled : true
+    });
+    await this.saveSettings();
+    return true;
+  }
+  /**
+   * Updates an existing tag definition in settings
+   */
+  async updateTagDefinition(originalName, updated) {
+    const target = this.settings.tags.find((t2) => t2.name === originalName);
+    if (!target) return false;
+    const lang = this.settings.language;
+    const defaultInstructions = lang === "zh" ? `\u8FD9\u7BC7\u7B14\u8BB0\u662F\u5426\u4E3B\u8981\u5173\u4E8E ${originalName}\uFF1F` : `Is this note primarily about ${originalName}?`;
+    const defaultMatchCriteria = lang === "zh" ? `${originalName} \u53CA\u76F8\u5173\u4E3B\u9898\u3002` : `${originalName} and related topics.`;
+    const defaultOtherCriteria = lang === "zh" ? "\u5176\u4ED6\u4E3B\u9898\u3002" : "Other topics.";
+    if (updated.instructions !== void 0) {
+      target.instructions = updated.instructions.trim() || defaultInstructions;
+    }
+    if (updated.matchCriteria !== void 0) {
+      target.matchCriteria = updated.matchCriteria.trim() || defaultMatchCriteria;
+    }
+    if (updated.otherCriteria !== void 0) {
+      target.otherCriteria = updated.otherCriteria.trim() || defaultOtherCriteria;
+    }
+    if (updated.enabled !== void 0) {
+      target.enabled = updated.enabled;
+    }
+    await this.saveSettings();
+    return true;
   }
 };

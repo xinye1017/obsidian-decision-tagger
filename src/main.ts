@@ -1,9 +1,10 @@
 import { getAllTags, Notice, Plugin, TFile } from "obsidian";
-import { NoteEvaluationResult } from "./jevClient";
+import { NoteEvaluationResult, TagDefinition } from "./jevClient";
 import { ModelClient, ModelError, migrateModels, isEligible, ModelProfile, ModelProvider, PROVIDERS } from "./modelClient";
 import { DEFAULT_SETTINGS, JevTaggerSettings, JevTaggerSettingTab } from "./settings";
 import { TagSuggestModal } from "./tagSuggestModal";
 import { BatchTagModal } from "./batchTagModal";
+import { TagModal } from "./tagModal";
 import { t, TranslationKey } from "./i18n";
 
 const LEGACY_DEFAULT_TAG_RULES = [
@@ -102,6 +103,15 @@ export default class JevTaggerPlugin extends Plugin {
 			name: this.tr("command.syncVaultTags"),
 			callback: async () => {
 				await this.detectAndSyncVaultTags();
+			},
+		});
+
+		// Add Command: Create New Tag
+		this.addCommand({
+			id: "jev-create-tag",
+			name: this.tr("command.createTag"),
+			callback: () => {
+				new TagModal(this.app, this).open();
 			},
 		});
 
@@ -500,6 +510,82 @@ export default class JevTaggerPlugin extends Plugin {
 		await this.saveSettings();
 		new Notice(this.tr("notice.vaultTagsSynced", { total: sortedTags.length, added: addedCount }));
 		return { added: addedCount, total: sortedTags.length };
+	}
+
+	/**
+	 * Adds a new tag definition to settings
+	 */
+	public async addTagDefinition(tag: TagDefinition): Promise<boolean> {
+		const cleanName = tag.name.replace(/^#/, "").trim();
+		if (!cleanName) {
+			throw new Error(this.tr("tagModal.errorEmptyName"));
+		}
+		if (/\s|\//.test(cleanName)) {
+			throw new Error(this.tr("tagModal.errorInvalidName"));
+		}
+		const exists = this.settings.tags.some(
+			(t) => t.name.toLowerCase() === cleanName.toLowerCase()
+		);
+		if (exists) {
+			throw new Error(this.tr("tagModal.errorDuplicateName", { tag: cleanName }));
+		}
+
+		const lang = this.settings.language;
+		const defaultInstructions = lang === "zh"
+			? `这篇笔记是否主要关于 ${cleanName}？`
+			: `Is this note primarily about ${cleanName}?`;
+		const defaultMatchCriteria = lang === "zh"
+			? `${cleanName} 及相关主题。`
+			: `${cleanName} and related topics.`;
+		const defaultOtherCriteria = lang === "zh"
+			? "其他主题。"
+			: "Other topics.";
+
+		this.settings.tags.push({
+			name: cleanName,
+			instructions: tag.instructions?.trim() || defaultInstructions,
+			matchCriteria: tag.matchCriteria?.trim() || defaultMatchCriteria,
+			otherCriteria: tag.otherCriteria?.trim() || defaultOtherCriteria,
+			enabled: tag.enabled !== undefined ? tag.enabled : true,
+		});
+
+		await this.saveSettings();
+		return true;
+	}
+
+	/**
+	 * Updates an existing tag definition in settings
+	 */
+	public async updateTagDefinition(originalName: string, updated: Partial<TagDefinition>): Promise<boolean> {
+		const target = this.settings.tags.find((t) => t.name === originalName);
+		if (!target) return false;
+
+		const lang = this.settings.language;
+		const defaultInstructions = lang === "zh"
+			? `这篇笔记是否主要关于 ${originalName}？`
+			: `Is this note primarily about ${originalName}?`;
+		const defaultMatchCriteria = lang === "zh"
+			? `${originalName} 及相关主题。`
+			: `${originalName} and related topics.`;
+		const defaultOtherCriteria = lang === "zh"
+			? "其他主题。"
+			: "Other topics.";
+
+		if (updated.instructions !== undefined) {
+			target.instructions = updated.instructions.trim() || defaultInstructions;
+		}
+		if (updated.matchCriteria !== undefined) {
+			target.matchCriteria = updated.matchCriteria.trim() || defaultMatchCriteria;
+		}
+		if (updated.otherCriteria !== undefined) {
+			target.otherCriteria = updated.otherCriteria.trim() || defaultOtherCriteria;
+		}
+		if (updated.enabled !== undefined) {
+			target.enabled = updated.enabled;
+		}
+
+		await this.saveSettings();
+		return true;
 	}
 }
 

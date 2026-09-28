@@ -2,6 +2,7 @@ import { App, Modal, Notice, PluginSettingTab, Setting } from "obsidian";
 import type JevTaggerPlugin from "./main";
 import type { TagDefinition } from "./jevClient";
 import { BatchTagModal } from "./batchTagModal";
+import { TagModal } from "./tagModal";
 import { Language, LANGUAGES, LANGUAGE_OPTIONS, TranslationKey, t } from "./i18n";
 import { defaultProfile, ModelClient, ModelProfile, ModelProvider, PROVIDERS } from "./modelClient";
 
@@ -246,6 +247,14 @@ export class JevTaggerSettingTab extends PluginSettingTab {
 			});
 
 			const toolbarButtons = toolbar.createDiv({ cls: "jev-tag-toolbar-buttons" });
+			const addBtn = toolbarButtons.createEl("button", {
+				cls: "mod-cta jev-tag-action-btn",
+				text: t(lang, "settings.tagLibrary.addTag"),
+			});
+			addBtn.onclick = () => {
+				new TagModal(this.app, this.plugin, undefined, () => this.display()).open();
+			};
+
 			const enableAllBtn = toolbarButtons.createEl("button", {
 				cls: "jev-tag-action-btn",
 				text: t(lang, "settings.tagLibrary.enableAll"),
@@ -273,15 +282,19 @@ export class JevTaggerSettingTab extends PluginSettingTab {
 					cls: `jev-tag-card ${tag.enabled ? "is-enabled" : "is-disabled"}`,
 				});
 
-				// Left: Tag pill with # symbol
+				// Left: Tag pill with # symbol (clickable to edit)
 				const chip = tagCard.createDiv({ cls: "jev-tag-card-chip" });
+				chip.style.cursor = "pointer";
+				chip.onclick = () => {
+					new TagModal(this.app, this.plugin, tag, () => this.display()).open();
+				};
 				chip.createSpan({ cls: "jev-tag-hash", text: "#" });
 				const nameEl = chip.createSpan({ cls: "jev-tag-name", text: tag.name });
 				if (tag.instructions) {
 					nameEl.title = tag.instructions;
 				}
 
-				// Right: Toggle & Delete
+				// Right: Toggle, Edit & Delete
 				const toggleContainer = tagCard.createDiv({ cls: "jev-tag-card-toggle" });
 				new Setting(toggleContainer)
 					.addToggle((toggle) => {
@@ -297,6 +310,15 @@ export class JevTaggerSettingTab extends PluginSettingTab {
 								t(lang, "settings.tagLibrary.stats", { total: totalTags, enabled: updatedEnabled })
 							);
 						});
+					})
+					.addExtraButton((btn) => {
+						btn.setIcon("pencil")
+							.setTooltip(t(lang, "settings.tagLibrary.editTooltip"))
+							.onClick(() => {
+								new TagModal(this.app, this.plugin, tag, () => {
+									this.display();
+								}).open();
+							});
 					})
 					.addExtraButton((btn) => {
 						btn.setIcon("trash-2")
@@ -315,6 +337,21 @@ export class JevTaggerSettingTab extends PluginSettingTab {
 				cls: "jev-tag-empty-text",
 				text: t(lang, "settings.tagLibrary.empty"),
 			});
+			const emptyBtns = emptyEl.createDiv({ cls: "jev-tag-empty-buttons" });
+			const createBtn = emptyBtns.createEl("button", {
+				cls: "mod-cta",
+				text: t(lang, "settings.tagLibrary.addTag"),
+			});
+			createBtn.onclick = () => {
+				new TagModal(this.app, this.plugin, undefined, () => this.display()).open();
+			};
+			const syncBtn = emptyBtns.createEl("button", {
+				text: t(lang, "settings.sync.button"),
+			});
+			syncBtn.onclick = async () => {
+				await this.plugin.detectAndSyncVaultTags();
+				this.display();
+			};
 		}
 	}
 }
