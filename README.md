@@ -2,15 +2,20 @@
 
 An intelligent Obsidian tagging plugin powered by System-1 decision models (e.g. Jev) with multi-key parallel classification acceleration.
 
-[简体中文](README_zh.md) · [Releases](https://github.com/xinye1017/obsidian-decision-tagger/releases)
+[English](README.md) · [简体中文](README_zh.md) · [日本語](README_ja.md) · [Releases](https://github.com/xinye1017/obsidian-decision-tagger/releases)
 
 ---
 
-**Decision Tagger** evaluates your notes against customizable decision rules with high precision. It supports instant tag suggestions for active notes, full-vault or scoped batch processing, and multi-key concurrent acceleration to tag thousands of notes in minutes.
+**Decision Tagger** evaluates your notes against customizable decision rules with high precision. It supports instant tag suggestions for active notes, folder-scoped or full-vault batch processing, and multi-key concurrent acceleration to tag thousands of notes in minutes.
 
 ---
 
 ## Key Features
+
+- **Folder-Scoped & Vault-Wide Batch Classification**
+  - **Target specific folders or the entire vault**: Easily classify your entire vault or narrow down to specific directories (e.g. `Inbox/`, `Projects/`, or `Readings/`).
+  - **Interactive folder picker with note counts**: Inspect real-time note counts for each directory level to accurately plan and scope your batch runs.
+  - Recursively processes subdirectories while safely respecting note boundaries and non-markdown files.
 
 - **Multi-Key Parallel Classification Acceleration**
   - Configure multiple API keys for your provider; the batch runner automatically spins up concurrent workers (up to 8 parallel streams) to dramatically cut down scan time.

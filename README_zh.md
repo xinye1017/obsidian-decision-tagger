@@ -2,15 +2,20 @@
 
 基于 System-1 决策模型（比如 Jev）的 Obsidian 智能标签分类插件，支持多 Key 并发并行分类加速。
 
-[English](README.md) · [GitHub Releases](https://github.com/xinye1017/obsidian-decision-tagger/releases)
+[English](README.md) · [简体中文](README_zh.md) · [日本語](README_ja.md) · [GitHub Releases](https://github.com/xinye1017/obsidian-decision-tagger/releases)
 
 ---
 
-**Decision Tagger** 能够根据你设定的标签判定规则，对知识库笔记进行高精度的智能分类与打标。支持当前笔记即时推荐、整个知识库或指定目录批量扫描，以及多账号 Key 并行分类加速，助你在极短时间内完成海量笔记整理。
+**Decision Tagger** 能够根据你设定的标签判定规则，对知识库笔记进行高精度的智能分类与打标。支持当前笔记即时推荐、按指定文件夹或全库批量扫描，以及多账号 Key 并行分类加速，助你在极短时间内完成海量笔记整理。
 
 ---
 
 ## 核心特性
+
+- **支持按文件夹灵活划分分类范围（指定目录 / 全库分类）**
+  - **精准指定目标目录**：支持对整个知识库进行批量分类，也支持按需选定特定文件夹及其子目录（如 `Inbox/`、`Projects/`、`Readings/` 等）。
+  - **实时目录笔记统计**：目录选择器实时显示各层级目录的笔记数量，清晰掌控批处理范围与任务规模。
+  - 自动递归处理子文件夹，同时严格跳过非 Markdown 文件与模板目录，确保分类高效纯净。
 
 - **多 Key 并发并行分类加速**
   - 支持配置多个 API Key，批量分类时自动启动对应数量的 Worker（最高 8 线程并行），分类速度成倍提升。
