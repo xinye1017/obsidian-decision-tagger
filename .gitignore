@@ -7,3 +7,9 @@ dist/
 
 output/playwright/
 .playwright-cli/
+
+# scratch output from ad-hoc research
+.research/
+bing.html
+ddg.html
+r.json
