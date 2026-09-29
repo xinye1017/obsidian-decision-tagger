@@ -43,8 +43,13 @@ export class TagSuggestModal extends Modal {
 			const session = this.plugin.createEvaluationSession();
 			this.threshold = session.threshold;
 			const cache = this.app.metadataCache.getFileCache(this.file);
-			const raw = (cache?.frontmatter as Record<string, unknown> | undefined)?.["tags"];
-			this.existingTags = new Set((Array.isArray(raw) ? raw.map(String) : typeof raw === "string" ? raw.split(/[\s,]+/) : []).map(tag => tag.replace(/^#/, "")));
+			const raw: unknown = cache?.frontmatter?.["tags"];
+			const rawTags = Array.isArray(raw)
+				? raw.map((t: unknown) => String(t).replace(/^#/, ""))
+				: typeof raw === "string"
+				? raw.split(/[\s,]+/).map((t: string) => t.replace(/^#/, ""))
+				: [];
+			this.existingTags = new Set(rawTags);
 			this.results = await this.plugin.evaluateFile(this.file, session, this.controller.signal, stage => {
 				if (this.closed) return;
 				progress.status.setText(this.tr(`progress.${stage}`));

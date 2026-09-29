@@ -97,7 +97,7 @@
 .jev-tag-toolbar-buttons { display: flex; gap: 8px; }
 .jev-tag-action-btn { font-size: 12px; }
 .jev-tag-library-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 20px; }
-.is-hidden { display: none !important; }
+.jev-key-batch-container.is-hidden, .jev-modal-shell .is-hidden, .is-hidden { display: none; }
 .jev-tag-card { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 44px; border-bottom: 1px solid var(--background-modifier-border); }
 .jev-tag-card-chip { display: flex; align-items: center; min-width: 0; gap: 2px; cursor: pointer; }
 .jev-tag-hash { color: var(--text-accent); }

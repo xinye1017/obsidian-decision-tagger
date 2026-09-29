@@ -1,6 +1,6 @@
 import { getAllTags, Notice, Plugin, TFile } from "obsidian";
 import { NoteEvaluationResult, TagDefinition } from "./jevClient";
-import { ModelClient, ModelError, migrateModels, isEligible, ModelProfile, ModelProvider, PROVIDERS } from "./modelClient";
+import { ModelClient, ModelError, migrateModels, isEligible, ModelProfile, PROVIDERS } from "./modelClient";
 import { KeyPool, sameKeys } from "./keyPool";
 import { splitFrontmatter, withEmptyFrontmatter } from "./frontmatter";
 import { DEFAULT_SETTINGS, JevTaggerSettings, JevTaggerSettingTab } from "./settings";
@@ -396,8 +396,9 @@ export default class JevTaggerPlugin extends Plugin {
 				const escaped = cleanTag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 				const inlineRegex = new RegExp(`(^|\\s)#${escaped}(?=[\\s,，.。!！?？:：;；"'\`\\]\\)\\>\\<]|$)(?!\\/)`, "g");
 				if (inlineRegex.test(body)) {
-					const updatedBody = body.replace(inlineRegex, (match, prefix) => {
-						return prefix.includes("\n") ? prefix : "";
+					const updatedBody = body.replace(inlineRegex, (_match: string, prefix: string): string => {
+						const strPrefix = String(prefix || "");
+						return strPrefix.includes("\n") ? strPrefix : "";
 					});
 					if (updatedBody !== body) {
 						await this.app.vault.modify(file, frontmatter + updatedBody);
@@ -546,7 +547,7 @@ export default class JevTaggerPlugin extends Plugin {
 	 * and syncs them into the plugin's tag library.
 	 */
 	public async detectAndSyncVaultTags(): Promise<{ added: number; total: number }> {
-		const allTagsMap: Record<string, number> = Object.create(null);
+		const allTagsMap: Record<string, number> = {};
 		for (const file of this.app.vault.getMarkdownFiles()) {
 			const cache = this.app.metadataCache.getFileCache(file);
 			for (const tag of cache ? getAllTags(cache) || [] : []) allTagsMap[tag] = (allTagsMap[tag] || 0) + 1;

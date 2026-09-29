@@ -200,7 +200,9 @@ function readProfile(value, fallback) {
 }
 function readKeyList(value, legacy = "") {
   const saved = Array.isArray(value) ? value : typeof value === "string" ? [value] : [];
-  const keys = [...saved, ...typeof legacy === "string" ? [legacy] : []].filter((key) => typeof key === "string" && !!key.trim()).map((key) => key.trim());
+  const legacyList = typeof legacy === "string" ? [legacy] : [];
+  const combined = [...saved, ...legacyList];
+  const keys = combined.filter((key) => typeof key === "string" && !!key.trim()).map((key) => key.trim());
   return [...new Set(keys)];
 }
 function migrateModels(saved) {
@@ -846,9 +848,9 @@ var translations = {
 function t(language, key, params) {
   const template = translations[language]?.[key] ?? translations.en[key] ?? key;
   if (!params) return template;
-  return template.replace(/\{(\w+)\}/g, (match, name) => {
+  return template.replace(/\{(\w+)\}/g, (_match, name) => {
     const val = params[name];
-    return val !== void 0 ? String(val) : match;
+    return val !== void 0 ? String(val) : _match;
   });
 }
 
@@ -1890,7 +1892,8 @@ var TagSuggestModal = class extends import_obsidian6.Modal {
       this.threshold = session.threshold;
       const cache = this.app.metadataCache.getFileCache(this.file);
       const raw = cache?.frontmatter?.["tags"];
-      this.existingTags = new Set((Array.isArray(raw) ? raw.map(String) : typeof raw === "string" ? raw.split(/[\s,]+/) : []).map((tag) => tag.replace(/^#/, "")));
+      const rawTags = Array.isArray(raw) ? raw.map((t2) => String(t2).replace(/^#/, "")) : typeof raw === "string" ? raw.split(/[\s,]+/).map((t2) => t2.replace(/^#/, "")) : [];
+      this.existingTags = new Set(rawTags);
       this.results = await this.plugin.evaluateFile(this.file, session, this.controller.signal, (stage) => {
         if (this.closed) return;
         progress.status.setText(this.tr(`progress.${stage}`));
@@ -2310,8 +2313,9 @@ var JevTaggerPlugin = class extends import_obsidian7.Plugin {
         const escaped = cleanTag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         const inlineRegex = new RegExp(`(^|\\s)#${escaped}(?=[\\s,\uFF0C.\u3002!\uFF01?\uFF1F:\uFF1A;\uFF1B"'\`\\]\\)\\>\\<]|$)(?!\\/)`, "g");
         if (inlineRegex.test(body)) {
-          const updatedBody = body.replace(inlineRegex, (match, prefix) => {
-            return prefix.includes("\n") ? prefix : "";
+          const updatedBody = body.replace(inlineRegex, (_match, prefix) => {
+            const strPrefix = String(prefix || "");
+            return strPrefix.includes("\n") ? strPrefix : "";
           });
           if (updatedBody !== body) {
             await this.app.vault.modify(file, frontmatter + updatedBody);
@@ -2442,7 +2446,7 @@ var JevTaggerPlugin = class extends import_obsidian7.Plugin {
    * and syncs them into the plugin's tag library.
    */
   async detectAndSyncVaultTags() {
-    const allTagsMap = /* @__PURE__ */ Object.create(null);
+    const allTagsMap = {};
     for (const file of this.app.vault.getMarkdownFiles()) {
       const cache = this.app.metadataCache.getFileCache(file);
       for (const tag of cache ? (0, import_obsidian7.getAllTags)(cache) || [] : []) allTagsMap[tag] = (allTagsMap[tag] || 0) + 1;

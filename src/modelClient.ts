@@ -112,8 +112,10 @@ function readProfile(value: unknown, fallback: ModelProfile): ModelProfile {
 
 /** Keys are stored as a list; a single saved string becomes a one key pool. */
 function readKeyList(value: unknown, legacy: unknown = ""): string[] {
-	const saved = Array.isArray(value) ? value : typeof value === "string" ? [value] : [];
-	const keys = [...saved, ...(typeof legacy === "string" ? [legacy] : [])]
+	const saved: unknown[] = Array.isArray(value) ? (value as unknown[]) : typeof value === "string" ? [value] : [];
+	const legacyList: unknown[] = typeof legacy === "string" ? [legacy] : [];
+	const combined: unknown[] = [...saved, ...legacyList];
+	const keys = combined
 		.filter((key): key is string => typeof key === "string" && !!key.trim())
 		.map(key => key.trim());
 	return [...new Set(keys)];

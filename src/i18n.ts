@@ -468,8 +468,8 @@ export function t(
 	const template: string = translations[language]?.[key] ?? translations.en[key] ?? key;
 	if (!params) return template;
 
-	return template.replace(/\{(\w+)\}/g, (match, name) => {
-		const val = params[name];
-		return val !== undefined ? String(val) : match;
+	return template.replace(/\{(\w+)\}/g, (_match: string, name: string): string => {
+		const val: string | number | undefined = params[name];
+		return val !== undefined ? String(val) : _match;
 	});
 }
