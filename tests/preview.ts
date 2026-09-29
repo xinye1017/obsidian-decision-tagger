@@ -1,5 +1,6 @@
 import { BatchTagModal } from '../src/batchTagModal';
 import { TagSuggestModal } from '../src/tagSuggestModal';
+import { TagModal } from '../src/tagModal';
 import { JevTaggerSettingTab } from '../src/settings';
 import { KeyPool } from '../src/keyPool';
 import Plugin from '../src/main';
@@ -25,7 +26,7 @@ const app: any = { vault: {
   getRoot: () => root,
   getName: () => 'lixinye',
   getAbstractFileByPath: (path: string) => folders.get(path) ?? null,
-}, metadataCache: { getFileCache: () => ({ frontmatter: { tags: ['阅读'] } }) } };
+}, metadataCache: { getFileCache: () => ({ frontmatter: { tags: ['人工智能'] }, tags: ['人工智能'] }) } };
 plugin.app = app;
 plugin.saveSettings = async () => {};
 plugin.detectAndSyncVaultTags = async () => ({ added: 0, total: 8 });
@@ -42,6 +43,7 @@ function open(kind: string) {
  document.querySelector('#surface')!.className = '';
  document.querySelector('#surface')!.replaceChildren();
  if (kind === 'settings') { current = new JevTaggerSettingTab(app, plugin); current.display(); }
+ else if (kind === 'tag') { current = new TagModal(app, plugin, plugin.settings.tags[0] as any, () => {}); current.open(); }
  else { current = kind === 'note' ? new TagSuggestModal(app, plugin, files[0] as any) : new BatchTagModal(app, plugin); current.open(); }
 }
 document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => open((button as HTMLElement).dataset.view!)));

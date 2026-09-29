@@ -24,7 +24,7 @@ export class Plugin {}
 const ICONS: Record<string, string> = { folder: '▸', 'folder-open': '▾', 'corner-up-left': '↰', 'chevron-down': '⌄', 'chevron-up': '⌃' };
 export const setIcon = (parent: HTMLElement, icon: string) => { const node = document.createElement('span'); node.className = 'svg-icon'; node.textContent = ICONS[icon] ?? '•'; parent.append(node); };
 export class Notice { constructor(public text: string) { document.querySelector('#notice')!.textContent = text; } }
-export const getAllTags = () => [];
+export const getAllTags = (cache: any) => cache?.tags || [];
 export const requestUrl = async () => ({ status: 200, json: { choices: [{ message: { content: '{"results":[{"tagName":"test","isMatch":true,"probability":0.99,"reason":"Test"}]}' } }] } });
 export class Modal {
  modalEl: HTMLElement; contentEl: HTMLElement;
@@ -56,10 +56,12 @@ class Control {
  setDynamicTooltip() { return this; }
 }
 export class Setting {
- settingEl: HTMLElement; info: HTMLElement; nameEl: HTMLElement; desc: HTMLElement; controlEl: HTMLElement;
+ settingEl: HTMLElement; infoEl: HTMLElement; nameEl: HTMLElement; descEl: HTMLElement; controlEl: HTMLElement;
+ // `info` and `desc` are the names this shim used before; keep both aliases.
+ get info() { return this.infoEl; } get desc() { return this.descEl; }
  constructor(container: HTMLElement) {
-  this.settingEl = container.createDiv({ cls: 'setting-item' }); this.info = this.settingEl.createDiv({ cls: 'setting-item-info' });
-  this.nameEl = this.info.createDiv({ cls: 'setting-item-name' }); this.desc = this.info.createDiv({ cls: 'setting-item-description' });
+  this.settingEl = container.createDiv({ cls: 'setting-item' }); this.infoEl = this.settingEl.createDiv({ cls: 'setting-item-info' });
+  this.nameEl = this.infoEl.createDiv({ cls: 'setting-item-name' }); this.descEl = this.infoEl.createDiv({ cls: 'setting-item-description' });
   this.controlEl = this.settingEl.createDiv({ cls: 'setting-item-control' });
  }
  setName(value: string) { this.nameEl.setText(value); return this; }
@@ -68,6 +70,7 @@ export class Setting {
  control(tag: string, callback: any, type?: string) { const node = document.createElement(tag); if (type) (node as HTMLInputElement).type = type; node.setAttribute('aria-label', this.nameEl.textContent || 'Action'); this.controlEl.append(node); callback(new Control(node)); return this; }
  addDropdown(callback: any) { return this.control('select', callback); }
  addText(callback: any) { return this.control('input', callback, 'text'); }
+ addTextArea(callback: any) { return this.control('textarea', callback); }
  addButton(callback: any) { return this.control('button', callback); }
  addExtraButton(callback: any) { return this.control('button', callback); }
  addToggle(callback: any) { return this.control('input', callback, 'checkbox'); }

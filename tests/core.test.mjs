@@ -516,4 +516,68 @@ test('updateTagDefinition updates existing tag criteria and ignores missing tags
  assert.equal(missing, false);
 });
 
+test('parseApiKeys parses single, comma-separated and newline-separated keys with deduplication', () => {
+ const { parseApiKeys } = load();
+ assert.deepEqual([...parseApiKeys('sk-single')], ['sk-single']);
+ assert.deepEqual([...parseApiKeys('sk-1, sk-2, sk-3')], ['sk-1', 'sk-2', 'sk-3']);
+ assert.deepEqual([...parseApiKeys('sk-1，sk-2')], ['sk-1', 'sk-2']);
+ assert.deepEqual([...parseApiKeys('sk-1\nsk-2\nsk-3')], ['sk-1', 'sk-2', 'sk-3']);
+ assert.deepEqual([...parseApiKeys('  sk-1 ,  sk-2 , sk-1  ')], ['sk-1', 'sk-2']);
+ assert.deepEqual([...parseApiKeys('')], []);
+ assert.deepEqual([...parseApiKeys('   ')], []);
+ assert.deepEqual([...parseApiKeys(null)], []);
+});
 
+
+/** Tags a note actually carries, frontmatter list items and inline #tags alike. */
+const tagsIn = (content) => [
+  ...[...content.matchAll(/^\s*-\s+(.+)$/gm)].map(match => match[1]),
+  ...[...content.matchAll(/(?:^|\s)#([^\s#]+)/g)].map(match => match[1]),
+];
+function tagger(api, files, tags) {
+  const plugin = new api.PluginClass();
+  const mock = vaultWith(files);
+  plugin.app = { ...mock.app, vault: { ...mock.app.vault, getMarkdownFiles: () => Object.keys(files).map(path => ({ path })) }, metadataCache: { getFileCache: file => ({ tags: tagsIn(files[file.path] ?? '') }) } };
+  plugin.settings = { language: 'en', provider: 'openrouter', models: [], apiKeys: { typesafe: [], openrouter: ['key'] }, tags, confidenceThreshold: 0.7 };
+  plugin.saveSettings = async () => {};
+  return plugin;
+}
+test('renaming a tag applies it to the library and to every note that carried it', async () => {
+ const api = load();
+ const files = {
+  'frontmatter.md': '---\ntags:\n  - AI\n---\nBody stays.\n',
+  'inline.md': 'A plain note with #AI in the body.\n',
+  'untouched.md': 'Nothing to do here.\n',
+ };
+ const plugin = tagger(api, files, [{ name: 'AI', enabled: true, instructions: 'Is this note primarily about AI?', matchCriteria: 'AI and related topics.', otherCriteria: 'Other topics.' }]);
+ const result = await plugin.renameTag('AI', '人工智能');
+ assert.deepEqual({ ...result }, { notes: 2, from: 'AI', to: '人工智能' });
+ assert.equal(files['frontmatter.md'], '---\ntags:\n  - 人工智能\n---\nBody stays.\n');
+ assert.equal(files['inline.md'], '---\ntags:\n  - 人工智能\n---\nA plain note with in the body.\n', 'the inline tag moves into the frontmatter');
+ assert.equal(files['untouched.md'], 'Nothing to do here.\n');
+ const rule = plugin.settings.tags[0];
+ assert.equal(rule.name, '人工智能');
+ assert.equal(rule.instructions, 'Is this note primarily about 人工智能?', 'generated criteria follow the new name');
+ assert.equal(rule.matchCriteria, '人工智能 and related topics.');
+ assert.equal(rule.enabled, true, 'the rest of the rule is untouched');
+ assert.equal(plugin.notesWithTag('人工智能').length, 2);
+ assert.equal(plugin.notesWithTag('AI').length, 0);
+});
+test('renaming leaves hand written criteria alone', async () => {
+ const api = load(); const plugin = tagger(api, {}, [{ name: 'AI', enabled: true, instructions: 'Does this note discuss models?', matchCriteria: 'Weights, training runs.', otherCriteria: 'Deployment.' }]);
+ await plugin.renameTag('#AI', '人工智能');
+ const rule = plugin.settings.tags[0];
+ assert.equal(rule.name, '人工智能');
+ assert.deepEqual([rule.instructions, rule.matchCriteria, rule.otherCriteria], ['Does this note discuss models?', 'Weights, training runs.', 'Deployment.']);
+});
+test('renaming rejects names that clash, break the rule, or do not exist', async () => {
+ const api = load();
+ const plugin = tagger(api, {}, [{ name: 'AI', enabled: true, instructions: 'x', matchCriteria: 'y', otherCriteria: 'z' }, { name: 'ML', enabled: true, instructions: 'x', matchCriteria: 'y', otherCriteria: 'z' }]);
+ await assert.rejects(plugin.renameTag('AI', 'ML'), /already exists/);
+ await assert.rejects(plugin.renameTag('AI', 'two words'), /cannot contain spaces/);
+ await assert.rejects(plugin.renameTag('AI', 'a/b'), /cannot contain spaces/);
+ await assert.rejects(plugin.renameTag('AI', '  '), /cannot be empty/);
+ await assert.rejects(plugin.renameTag('Nope', 'New'), /is not in the library/);
+ assert.deepEqual([...plugin.settings.tags].map(tag => tag.name), ['AI', 'ML']);
+ assert.deepEqual({ ...(await plugin.renameTag('AI', 'AI')) }, { notes: 0, from: 'AI', to: 'AI' }, 'renaming to the same name is a no-op');
+});

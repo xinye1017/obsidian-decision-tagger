@@ -74,7 +74,7 @@ const translations = {
 		"tagModal.createTitle": "新建标签规则",
 		"tagModal.editTitle": "编辑标签 #{tag}",
 		"tagModal.name": "标签名称",
-		"tagModal.nameDesc": "要分类评估的标签名（无需输入 # 前缀，不可包含空格或斜杠）。",
+		"tagModal.nameDesc": "要分类评估的标签名（无需输入 # 前缀，不可包含空格或斜杠）。改名会同步应用到全库。",
 		"tagModal.namePlaceholder": "例如：AI、读书笔记、技术架构",
 		"tagModal.instructions": "判定问题 / 提示词",
 		"tagModal.instructionsDesc": "引导模型进行判定的具体问题。留空将自动根据标签名生成默认判定问题。",
@@ -93,6 +93,9 @@ const translations = {
 		"tagModal.errorDuplicateName": "标签 #{tag} 已存在于规则库中！",
 		"tagModal.createSuccess": "已成功创建标签 #{tag}！",
 		"tagModal.editSuccess": "已成功更新标签 #{tag} 的判断规则！",
+		"tagModal.renameHint": "保存后将同步把 {notes} 篇笔记中的该标签改为新名称。",
+		"tagModal.renameSuccess": "已把 #{from} 改名为 #{to}，并同步更新了 {notes} 篇笔记。",
+		"tagModal.errorMissingName": "规则库中找不到标签 #{tag}！",
 
 		"tagSuggest.title": "{name}",
 
@@ -277,7 +280,7 @@ const translations = {
 		"tagModal.createTitle": "New Tag Rule",
 		"tagModal.editTitle": "Edit Tag #{tag}",
 		"tagModal.name": "Tag Name",
-		"tagModal.nameDesc": "The tag name to evaluate (without leading #, no spaces or slashes).",
+		"tagModal.nameDesc": "The tag name to evaluate (without leading #, no spaces or slashes). Renaming applies across the vault.",
 		"tagModal.namePlaceholder": "e.g. AI, BookNotes, Architecture",
 		"tagModal.instructions": "Evaluation Question / Prompt",
 		"tagModal.instructionsDesc": "Question to guide the model. Leave empty to auto-generate default question.",
@@ -296,6 +299,9 @@ const translations = {
 		"tagModal.errorDuplicateName": "Tag #{tag} already exists in the library!",
 		"tagModal.createSuccess": "Successfully created tag #{tag}!",
 		"tagModal.editSuccess": "Successfully updated criteria for tag #{tag}!",
+		"tagModal.renameHint": "Saving also applies the new name to the tag in {notes} notes.",
+		"tagModal.renameSuccess": "Renamed #{from} to #{to} and updated {notes} notes.",
+		"tagModal.errorMissingName": "Tag #{tag} is not in the library!",
 
 		"tagSuggest.title": "{name}",
 

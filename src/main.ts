@@ -453,23 +453,78 @@ export default class JevTaggerPlugin extends Plugin {
 	}
 
 	/**
+	 * Notes whose metadata cache actually reports the tag, whether it sits in the
+	 * frontmatter or inline in the body. A note the cache knows nothing about is
+	 * never reported: guessing would add the tag to notes that never had it.
+	 */
+	public notesWithTag(tag: string): TFile[] {
+		const cleanTag = tag.replace(/^#/, "").trim();
+		return this.app.vault.getMarkdownFiles().filter(file => {
+			const cache = this.app.metadataCache?.getFileCache ? this.app.metadataCache.getFileCache(file) : null;
+			if (!cache) return false;
+			return (getAllTags(cache) || []).some(found =>
+				(typeof found === "string" ? found : (found as any)?.tag || "").replace(/^#/, "").trim() === cleanTag
+			);
+		});
+	}
+
+	/**
+	 * Renames a tag and applies it in one go: the library rule and every note
+	 * that carried the old name end up on the new one. Notes that only had the
+	 * tag inline lose it there and gain it in the frontmatter, which is where
+	 * this plugin keeps tags.
+	 *
+	 * Criteria that were generated from the old name are regenerated, so the
+	 * model is not asked about a topic that no longer exists; criteria that were
+	 * written by hand are left untouched.
+	 */
+	public async renameTag(from: string, to: string): Promise<{ notes: number; from: string; to: string }> {
+		const oldName = from.replace(/^#/, "").trim();
+		const newName = to.replace(/^#/, "").trim();
+		if (!newName) throw new Error(this.tr("tagModal.errorEmptyName"));
+		if (/\s|\//.test(newName)) throw new Error(this.tr("tagModal.errorInvalidName"));
+		if (newName === oldName) return { notes: 0, from: oldName, to: newName };
+		const target = this.settings.tags.find((tag) => tag.name === oldName);
+		if (!target) throw new Error(this.tr("tagModal.errorMissingName", { tag: oldName }));
+		if (this.settings.tags.some((tag) => tag.name.toLowerCase() === newName.toLowerCase())) {
+			throw new Error(this.tr("tagModal.errorDuplicateName", { tag: newName }));
+		}
+
+		const notes = this.notesWithTag(oldName);
+		for (const file of notes) {
+			await this.removeTagFromFile(file, oldName);
+			await this.addTagToFile(file, newName);
+		}
+
+		const generated = this.generatedCriteria(target, oldName, newName);
+		if (generated) Object.assign(target, generated);
+		target.name = newName;
+		await this.saveSettings();
+		return { notes: notes.length, from: oldName, to: newName };
+	}
+
+	/** The two rule shapes this plugin generates for a tag name, in either UI language. */
+	private generatedCriteria(tag: TagDefinition, oldName: string, newName: string): Partial<TagDefinition> | null {
+		const patterns = [
+			(name: string) => ({ instructions: `Is this note primarily about ${name}?`, matchCriteria: `${name} and related topics.`, otherCriteria: "Other topics." }),
+			(name: string) => ({ instructions: `这篇笔记是否主要关于 ${name}？`, matchCriteria: `${name} 及相关主题。`, otherCriteria: "其他主题。" }),
+		];
+		const generated = patterns.find((pattern) => pattern(oldName).instructions === tag.instructions);
+		return generated ? generated(newName) : null;
+	}
+
+	/**
 	 * Removes a tag from all notes across the vault and deletes it from the tag library
 	 */
 	public async removeTagFromVault(tagName: string): Promise<{ affectedNotes: number; totalNotes: number }> {
 		const cleanTag = tagName.replace(/^#/, "").trim();
 		const files = this.app.vault.getMarkdownFiles ? this.app.vault.getMarkdownFiles() : [];
+		const carrying = new Set(this.notesWithTag(cleanTag).map((file) => file.path));
 		let affectedNotes = 0;
 
 		for (const file of files) {
-			const cache = this.app.metadataCache?.getFileCache ? this.app.metadataCache.getFileCache(file) : null;
-			let hasTag = false;
-			if (cache) {
-				const tags = getAllTags(cache) || [];
-				hasTag = tags.some((t) => (typeof t === "string" ? t : (t as any)?.tag || "").replace(/^#/, "").trim() === cleanTag);
-			} else {
-				hasTag = true;
-			}
-
+			// A note the cache cannot describe is still cleaned up, as before.
+			const hasTag = carrying.has(file.path) || !this.app.metadataCache?.getFileCache?.(file);
 			if (hasTag) {
 				const modified = await this.removeTagFromFile(file, cleanTag);
 				if (modified) affectedNotes++;
