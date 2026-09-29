@@ -1,6 +1,6 @@
 {
   "name": "obsidian-decision-tagger",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Obsidian note classification with Jev and configurable API models",
   "main": "main.js",
   "scripts": {

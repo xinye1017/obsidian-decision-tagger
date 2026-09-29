@@ -9,7 +9,7 @@ export const LANGUAGE_OPTIONS: Record<Language, string> = {
 
 const translations = {
 	zh: {
-		"plugin.ribbon": "decision tagger: 智能标签推荐",
+		"plugin.ribbon": "Decision Tagger: 智能标签推荐",
 
 		"notice.noActiveFile": "请先在编辑器中打开一篇笔记。",
 
@@ -23,16 +23,16 @@ const translations = {
 		"notice.noVaultTags": "未在知识库中检测到已有标签。",
 		"notice.vaultTagsSynced": "🏷️ 标签库检测完成！共扫描到 {total} 个已有标签，自动新发现并同步 {added} 个新标签至规则库！",
 		"notice.batchComplete": "批量打标完成！扫描 {scanned} 篇笔记，为 {modified} 篇笔记追加了 {added} 个新标签。",
-		"notice.predictFailed": "decision tagger 预测出错: {error}",
+		"notice.predictFailed": "Decision Tagger 预测出错: {error}",
 
 		"command.suggestTags": "为当前活动笔记推荐标签 (Suggest Tags for Active Note)",
 		"command.autoApply": "一键自动应用高置信标签到当前笔记 (Auto-apply Tags to Active Note)",
 		"command.batchTagAll": "批量扫描笔记并添加高置信标签 (Batch Tag Notes)",
 		"command.syncVaultTags": "自动检测并同步知识库标签库 (Detect and Sync Vault Tags)",
 		"command.createTag": "新建标签规则 (Create Tag Rule)",
-		"menu.suggestTags": "decision tagger: 智能标签推荐",
+		"menu.suggestTags": "Decision Tagger: 智能标签推荐",
 
-		"settings.title": "decision tagger 设置",
+		"settings.title": "Decision Tagger 设置",
 
 		"settings.subtitle": "从笔记到标签，让每一步分类都清晰可见。",
 
@@ -234,7 +234,7 @@ const translations = {
 	},
 
 	en: {
-		"plugin.ribbon": "decision tagger: Suggest Tags",
+		"plugin.ribbon": "Decision Tagger: Suggest Tags",
 
 		"notice.noActiveFile": "Please open a note in the editor first.",
 
@@ -248,16 +248,16 @@ const translations = {
 		"notice.noVaultTags": "No existing tags were detected in this vault.",
 		"notice.vaultTagsSynced": "🏷️ Tag library sync complete! Scanned {total} existing tags and discovered {added} new tags added to the rule library!",
 		"notice.batchComplete": "Batch tagging complete! Scanned {scanned} notes and appended {added} new tags across {modified} notes.",
-		"notice.predictFailed": "decision tagger prediction failed: {error}",
+		"notice.predictFailed": "Decision Tagger prediction failed: {error}",
 
 		"command.suggestTags": "Suggest tags for the active note",
 		"command.autoApply": "Auto-apply tags to the active note",
 		"command.batchTagAll": "Batch scan notes and add high-confidence tags",
 		"command.syncVaultTags": "Detect and sync vault tags",
 		"command.createTag": "Create Tag Rule",
-		"menu.suggestTags": "decision tagger: Suggest Tags",
+		"menu.suggestTags": "Decision Tagger: Suggest Tags",
 
-		"settings.title": "decision tagger Settings",
+		"settings.title": "Decision Tagger Settings",
 
 		"settings.subtitle": "From notes to tags, with a clear view of every step.",
 

@@ -447,7 +447,7 @@ var LANGUAGE_OPTIONS = {
 };
 var translations = {
   zh: {
-    "plugin.ribbon": "decision tagger: \u667A\u80FD\u6807\u7B7E\u63A8\u8350",
+    "plugin.ribbon": "Decision Tagger: \u667A\u80FD\u6807\u7B7E\u63A8\u8350",
     "notice.noActiveFile": "\u8BF7\u5148\u5728\u7F16\u8F91\u5668\u4E2D\u6253\u5F00\u4E00\u7BC7\u7B14\u8BB0\u3002",
     "notice.analyzing": "\u6B63\u5728\u5206\u6790\u7B14\u8BB0\uFF1A{name}\u2026",
     "notice.noEligibleTags": "\u672A\u68C0\u6D4B\u5230\u7F6E\u4FE1\u5EA6 \u2265 {threshold}% \u7684\u65B0\u6807\u7B7E\u3002",
@@ -459,14 +459,14 @@ var translations = {
     "notice.noVaultTags": "\u672A\u5728\u77E5\u8BC6\u5E93\u4E2D\u68C0\u6D4B\u5230\u5DF2\u6709\u6807\u7B7E\u3002",
     "notice.vaultTagsSynced": "\u{1F3F7}\uFE0F \u6807\u7B7E\u5E93\u68C0\u6D4B\u5B8C\u6210\uFF01\u5171\u626B\u63CF\u5230 {total} \u4E2A\u5DF2\u6709\u6807\u7B7E\uFF0C\u81EA\u52A8\u65B0\u53D1\u73B0\u5E76\u540C\u6B65 {added} \u4E2A\u65B0\u6807\u7B7E\u81F3\u89C4\u5219\u5E93\uFF01",
     "notice.batchComplete": "\u6279\u91CF\u6253\u6807\u5B8C\u6210\uFF01\u626B\u63CF {scanned} \u7BC7\u7B14\u8BB0\uFF0C\u4E3A {modified} \u7BC7\u7B14\u8BB0\u8FFD\u52A0\u4E86 {added} \u4E2A\u65B0\u6807\u7B7E\u3002",
-    "notice.predictFailed": "decision tagger \u9884\u6D4B\u51FA\u9519: {error}",
+    "notice.predictFailed": "Decision Tagger \u9884\u6D4B\u51FA\u9519: {error}",
     "command.suggestTags": "\u4E3A\u5F53\u524D\u6D3B\u52A8\u7B14\u8BB0\u63A8\u8350\u6807\u7B7E (Suggest Tags for Active Note)",
     "command.autoApply": "\u4E00\u952E\u81EA\u52A8\u5E94\u7528\u9AD8\u7F6E\u4FE1\u6807\u7B7E\u5230\u5F53\u524D\u7B14\u8BB0 (Auto-apply Tags to Active Note)",
     "command.batchTagAll": "\u6279\u91CF\u626B\u63CF\u7B14\u8BB0\u5E76\u6DFB\u52A0\u9AD8\u7F6E\u4FE1\u6807\u7B7E (Batch Tag Notes)",
     "command.syncVaultTags": "\u81EA\u52A8\u68C0\u6D4B\u5E76\u540C\u6B65\u77E5\u8BC6\u5E93\u6807\u7B7E\u5E93 (Detect and Sync Vault Tags)",
     "command.createTag": "\u65B0\u5EFA\u6807\u7B7E\u89C4\u5219 (Create Tag Rule)",
-    "menu.suggestTags": "decision tagger: \u667A\u80FD\u6807\u7B7E\u63A8\u8350",
-    "settings.title": "decision tagger \u8BBE\u7F6E",
+    "menu.suggestTags": "Decision Tagger: \u667A\u80FD\u6807\u7B7E\u63A8\u8350",
+    "settings.title": "Decision Tagger \u8BBE\u7F6E",
     "settings.subtitle": "\u4ECE\u7B14\u8BB0\u5230\u6807\u7B7E\uFF0C\u8BA9\u6BCF\u4E00\u6B65\u5206\u7C7B\u90FD\u6E05\u6670\u53EF\u89C1\u3002",
     "settings.section.general": "\u57FA\u672C\u914D\u7F6E",
     "settings.language.name": "\u754C\u9762\u8BED\u8A00",
@@ -640,7 +640,7 @@ var translations = {
     "result.writeFailed": "\u5199\u5165\u5931\u8D25\uFF1A{error}"
   },
   en: {
-    "plugin.ribbon": "decision tagger: Suggest Tags",
+    "plugin.ribbon": "Decision Tagger: Suggest Tags",
     "notice.noActiveFile": "Please open a note in the editor first.",
     "notice.analyzing": "Analyzing note: {name}\u2026",
     "notice.noEligibleTags": "No new tags found at or above the {threshold}% confidence threshold.",
@@ -652,14 +652,14 @@ var translations = {
     "notice.noVaultTags": "No existing tags were detected in this vault.",
     "notice.vaultTagsSynced": "\u{1F3F7}\uFE0F Tag library sync complete! Scanned {total} existing tags and discovered {added} new tags added to the rule library!",
     "notice.batchComplete": "Batch tagging complete! Scanned {scanned} notes and appended {added} new tags across {modified} notes.",
-    "notice.predictFailed": "decision tagger prediction failed: {error}",
+    "notice.predictFailed": "Decision Tagger prediction failed: {error}",
     "command.suggestTags": "Suggest tags for the active note",
     "command.autoApply": "Auto-apply tags to the active note",
     "command.batchTagAll": "Batch scan notes and add high-confidence tags",
     "command.syncVaultTags": "Detect and sync vault tags",
     "command.createTag": "Create Tag Rule",
-    "menu.suggestTags": "decision tagger: Suggest Tags",
-    "settings.title": "decision tagger Settings",
+    "menu.suggestTags": "Decision Tagger: Suggest Tags",
+    "settings.title": "Decision Tagger Settings",
     "settings.subtitle": "From notes to tags, with a clear view of every step.",
     "settings.section.general": "General",
     "settings.language.name": "Interface Language",
@@ -2086,11 +2086,11 @@ var JevTaggerPlugin = class extends import_obsidian7.Plugin {
       })
     );
     this.addSettingTab(new JevTaggerSettingTab(this.app, this));
-    console.log("decision tagger plugin loaded.");
+    console.log("Decision Tagger plugin loaded.");
   }
   onunload() {
     this.controllers.forEach((controller) => controller.abort());
-    console.log("decision tagger plugin unloaded.");
+    console.log("Decision Tagger plugin unloaded.");
   }
   syncActiveModel() {
     const provider = this.settings.provider || "typesafe";

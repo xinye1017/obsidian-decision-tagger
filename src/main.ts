@@ -137,12 +137,12 @@ export default class JevTaggerPlugin extends Plugin {
 
 		// Add Settings Tab
 		this.addSettingTab(new JevTaggerSettingTab(this.app, this));
-		console.log("decision tagger plugin loaded.");
+		console.log("Decision Tagger plugin loaded.");
 	}
 
 	onunload() {
 		this.controllers.forEach(controller => controller.abort());
-		console.log("decision tagger plugin unloaded.");
+		console.log("Decision Tagger plugin unloaded.");
 	}
 
 	syncActiveModel() {

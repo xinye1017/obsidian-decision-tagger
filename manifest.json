@@ -1,7 +1,7 @@
 {
   "id": "decision-tagger",
-  "name": "decision tagger",
-  "version": "1.0.0",
+  "name": "Decision Tagger",
+  "version": "1.0.1",
   "minAppVersion": "0.15.0",
   "description": "Classify notes with TypeSafe or OpenRouter decision models, review tag suggestions, and follow batch tagging progress.",
   "author": "xinyeli",

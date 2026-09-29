@@ -1,4 +1,4 @@
-# decision tagger
+# Decision Tagger
 
 An intelligent Obsidian tagging plugin powered by System-1 decision models (TypeSafe & OpenRouter) with multi-key parallel classification acceleration.
 
@@ -6,7 +6,7 @@ An intelligent Obsidian tagging plugin powered by System-1 decision models (Type
 
 ---
 
-**decision tagger** evaluates your notes against customizable decision rules with high precision. It supports instant tag suggestions for active notes, full-vault or scoped batch processing, and multi-key concurrent acceleration to tag thousands of notes in minutes.
+**Decision Tagger** evaluates your notes against customizable decision rules with high precision. It supports instant tag suggestions for active notes, full-vault or scoped batch processing, and multi-key concurrent acceleration to tag thousands of notes in minutes.
 
 ---
 
@@ -57,7 +57,7 @@ An intelligent Obsidian tagging plugin powered by System-1 decision models (Type
 1. Download `main.js`, `manifest.json`, and `styles.css` from the latest [Release](https://github.com/xinye1017/obsidian-decision-tagger/releases).
 2. Create a folder named `decision-tagger` under your vault's plugin directory: `<Vault>/.obsidian/plugins/decision-tagger/`.
 3. Copy the downloaded files into that folder.
-4. In Obsidian, go to **Settings → Community plugins** and enable **decision tagger**.
+4. In Obsidian, go to **Settings → Community plugins** and enable **Decision Tagger**.
 
 #### Option B: Build from Source
 ```sh
@@ -71,7 +71,7 @@ npm run build
 
 ## ⚙️ Configuration
 
-Open **Settings → decision tagger**:
+Open **Settings → Decision Tagger**:
 
 1. **Model Provider**:
    - **TypeSafe**: Preconfigured endpoint `https://api.typesafe.ai/v1/systemone` with model `jev-latest`.

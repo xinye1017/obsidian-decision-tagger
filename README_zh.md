@@ -1,4 +1,4 @@
-# decision tagger
+# Decision Tagger
 
 基于 System-1 决策模型（TypeSafe 与 OpenRouter）的 Obsidian 智能标签分类插件，支持多 Key 并发并行分类加速。
 
@@ -6,7 +6,7 @@
 
 ---
 
-**decision tagger** 能够根据你设定的标签判定规则，对知识库笔记进行高精度的智能分类与打标。支持当前笔记即时推荐、整个知识库或指定目录批量扫描，以及多账号 Key 并行分类加速，助你在极短时间内完成海量笔记整理。
+**Decision Tagger** 能够根据你设定的标签判定规则，对知识库笔记进行高精度的智能分类与打标。支持当前笔记即时推荐、整个知识库或指定目录批量扫描，以及多账号 Key 并行分类加速，助你在极短时间内完成海量笔记整理。
 
 ---
 
@@ -57,7 +57,7 @@
 1. 前往 [GitHub Releases](https://github.com/xinye1017/obsidian-decision-tagger/releases) 下载最新版本的 `main.js`、`manifest.json` 和 `styles.css`。
 2. 在知识库插件目录下创建文件夹：`<Vault>/.obsidian/plugins/decision-tagger/`。
 3. 将下载的 3 个文件复制到该文件夹中。
-4. 打开 Obsidian，进入 **设置 → 第三方插件**，启用 **decision tagger** 插件。
+4. 打开 Obsidian，进入 **设置 → 第三方插件**，启用 **Decision Tagger** 插件。
 
 #### 方式二：源码构建安装
 ```sh
@@ -71,7 +71,7 @@ npm run build
 
 ## ⚙️ 模型与参数配置
 
-打开 **设置 → decision tagger**：
+打开 **设置 → Decision Tagger**：
 
 1. **模型提供商**：
    - **TypeSafe**：内置 Base URL `https://api.typesafe.ai/v1/systemone`，默认模型 `jev-latest`。
