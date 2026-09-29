@@ -27,10 +27,99 @@ __export(main_exports, {
   default: () => JevTaggerPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian6 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 
 // src/modelClient.ts
 var import_obsidian = require("obsidian");
+
+// src/keyPool.ts
+var PERMANENT = ["invalid", "banned", "exhausted"];
+var DEFAULT_COOLDOWN_MS = 6e4;
+function freshKeyState() {
+  return { status: "unknown", lastStatus: 0, latencyMs: 0, checkedAt: 0, cooldownUntil: 0 };
+}
+function classifyStatus(status) {
+  if (status >= 200 && status < 300) return "healthy";
+  if (status === 401) return "invalid";
+  if (status === 402) return "exhausted";
+  if (status === 403) return "banned";
+  if (status === 429) return "limited";
+  return "unknown";
+}
+function sameKeys(a, b) {
+  return a.length === b.length && a.every((key, index) => key === b[index]);
+}
+function maskKey(secret) {
+  if (secret.length <= 8) return secret;
+  return `${secret.slice(0, 6)}\u2026${secret.slice(-4)}`;
+}
+var KeyPool = class {
+  constructor(keys = [], options = {}) {
+    this.keys = keys;
+    this.states = /* @__PURE__ */ new Map();
+    this.cursor = 0;
+    this.cooldownMs = options.cooldownMs ?? DEFAULT_COOLDOWN_MS;
+    this.clock = options.now ?? Date.now;
+    for (const key of this.keys) if (key) this.states.set(key, freshKeyState());
+  }
+  get size() {
+    return this.states.size;
+  }
+  state(key) {
+    return this.states.get(key) ?? freshKeyState();
+  }
+  /** A key serves requests while it is neither parked nor permanently finished. */
+  selectable(key) {
+    const state = this.state(key);
+    return state.cooldownUntil <= this.clock() && !PERMANENT.includes(state.status);
+  }
+  available() {
+    return this.keys.filter((key) => this.selectable(key));
+  }
+  /** Next key in rotation order, or undefined when the pool has nothing left to offer. */
+  take() {
+    for (let step = 0; step < this.keys.length; step++) {
+      const index = (this.cursor + step) % this.keys.length;
+      const key = this.keys[index];
+      if (this.selectable(key)) {
+        this.cursor = (index + 1) % this.keys.length;
+        return key;
+      }
+    }
+    return void 0;
+  }
+  record(key, status, latencyMs = 0, httpStatus = 0) {
+    const state = this.state(key);
+    state.status = status;
+    state.lastStatus = httpStatus;
+    state.checkedAt = this.clock();
+    if (status === "healthy") {
+      state.latencyMs = latencyMs;
+      state.cooldownUntil = 0;
+    } else {
+      state.latencyMs = 0;
+      state.cooldownUntil = PERMANENT.includes(status) ? 0 : this.clock() + this.cooldownMs;
+    }
+  }
+  summary() {
+    const states = this.keys.map((key) => this.state(key));
+    const healthy = states.filter((state) => state.status === "healthy");
+    const measured = healthy.filter((state) => state.latencyMs > 0);
+    const usable = this.available().length;
+    return {
+      total: this.size,
+      healthy: healthy.length,
+      limited: states.filter((state) => state.status === "limited").length,
+      dead: states.filter((state) => PERMANENT.includes(state.status)).length,
+      unchecked: states.filter((state) => state.checkedAt === 0).length,
+      usable,
+      percent: this.size ? usable / this.size : 0,
+      avgLatencyMs: measured.length ? Math.round(measured.reduce((sum, state) => sum + state.latencyMs, 0) / measured.length) : 0
+    };
+  }
+};
+
+// src/modelClient.ts
 var DECISIONS_SUFFIX = "/api/alpha/decisions";
 var DECISIONS_ALPHA_SUFFIX = "/alpha/decisions";
 var FULL_DECISIONS_PATH = /\/(decisions|systemone)$/;
@@ -66,16 +155,20 @@ function formatStateAsString(state) {
   return parts.join("\n\n");
 }
 function defaultProfile() {
-  return { id: "typesafe", name: "TypeSafe", endpoint: PROVIDERS.typesafe.endpoint, model: PROVIDERS.typesafe.model, apiKey: "" };
+  return { id: "typesafe", name: "TypeSafe", endpoint: PROVIDERS.typesafe.endpoint, model: PROVIDERS.typesafe.model };
 }
 function readProfile(value, fallback) {
   return {
     id: typeof value?.id === "string" && value.id ? value.id : fallback.id,
     name: typeof value?.name === "string" && value.name ? value.name : fallback.name,
     endpoint: typeof value?.endpoint === "string" ? value.endpoint : fallback.endpoint,
-    model: typeof value?.model === "string" ? value.model : fallback.model,
-    apiKey: typeof value?.apiKey === "string" ? value.apiKey : fallback.apiKey
+    model: typeof value?.model === "string" ? value.model : fallback.model
   };
+}
+function readKeyList(value, legacy = "") {
+  const saved = Array.isArray(value) ? value : typeof value === "string" ? [value] : [];
+  const keys = [...saved, ...typeof legacy === "string" ? [legacy] : []].filter((key) => typeof key === "string" && !!key.trim()).map((key) => key.trim());
+  return [...new Set(keys)];
 }
 function migrateModels(saved) {
   const defaultTs = defaultProfile();
@@ -83,27 +176,25 @@ function migrateModels(saved) {
     id: "openrouter",
     name: "OpenRouter",
     endpoint: PROVIDERS.openrouter.endpoint,
-    model: PROVIDERS.openrouter.model,
-    apiKey: ""
+    model: PROVIDERS.openrouter.model
   };
   let provider = saved?.provider === "openrouter" || saved?.activeModelId === "openrouter" ? "openrouter" : "typesafe";
   const apiKeys = {
-    typesafe: saved?.apiKeys?.typesafe || (provider === "typesafe" ? saved?.apiKey || "" : ""),
-    openrouter: saved?.apiKeys?.openrouter || (provider === "openrouter" ? saved?.apiKey || "" : "")
+    typesafe: readKeyList(saved?.apiKeys?.typesafe, provider === "typesafe" ? saved?.apiKey : ""),
+    openrouter: readKeyList(saved?.apiKeys?.openrouter, provider === "openrouter" ? saved?.apiKey : "")
   };
   let models;
   if (Array.isArray(saved?.models) && saved.models.length) {
+    const legacyKeys = (id) => readKeyList(saved.models.find((m) => m?.id === id)?.apiKey);
     models = saved.models.map((p) => readProfile(p, defaultTs));
-    const tsModel = models.find((m) => m.id === "typesafe" || m.id === "jev");
-    if (tsModel?.apiKey && !apiKeys.typesafe) apiKeys.typesafe = tsModel.apiKey;
-    const orModel = models.find((m) => m.id === "openrouter");
-    if (orModel?.apiKey && !apiKeys.openrouter) apiKeys.openrouter = orModel.apiKey;
+    if (!apiKeys.typesafe.length) apiKeys.typesafe = legacyKeys("typesafe");
+    if (!apiKeys.openrouter.length) apiKeys.openrouter = legacyKeys("openrouter");
   } else {
-    const ts = readProfile({ ...defaultTs, apiKey: saved?.apiKey || apiKeys.typesafe, endpoint: saved?.endpoint }, defaultTs);
+    const ts = readProfile({ ...defaultTs, endpoint: saved?.endpoint }, defaultTs);
     if (saved?.endpoint) {
       models = [ts];
     } else {
-      const or = readProfile({ ...defaultOr, apiKey: apiKeys.openrouter }, defaultOr);
+      const or = readProfile({ ...defaultOr }, defaultOr);
       models = [ts, or];
     }
   }
@@ -167,18 +258,18 @@ function isEligible(result, threshold) {
 var DETECTION_QUESTION = { type: "choice", instructions: "Is this note about software testing?", criteria: { match: "Software testing", other: "Other topics" } };
 var DETECTION_STATE = { title: "Connection test", content_start: "This note describes a software connection test." };
 var ModelClient = class {
-  constructor(profile) {
+  /** An empty pool sends unauthenticated requests, which keyless local services accept. */
+  constructor(profile, pool = new KeyPool()) {
     this.profile = { ...profile };
+    this.pool = pool;
   }
   modelField() {
     const model = this.profile.model.trim();
     return model ? { model } : {};
   }
   // requestUrl cannot abort its transport. Cancellation/timeout discard late responses.
-  async post(body, signal) {
-    validateProfile(this.profile);
-    if (signal?.aborted) throw new ModelError("cancelled");
-    const data = await new Promise((resolve, reject) => {
+  sendOnce(body, key, signal) {
+    return new Promise((resolve, reject) => {
       let settled = false;
       const timer = setTimeout(() => finish(new ModelError("timeout")), 6e4);
       const abort = () => finish(new ModelError("cancelled"));
@@ -197,7 +288,7 @@ var ModelClient = class {
           url: resolveEndpoint(this.profile),
           method: "POST",
           throw: false,
-          headers: { "Content-Type": "application/json", ...this.profile.apiKey ? { Authorization: `Bearer ${this.profile.apiKey}` } : {} },
+          headers: { "Content-Type": "application/json", ...key ? { Authorization: `Bearer ${key}` } : {} },
           body: JSON.stringify(body)
         });
       }).then((response) => {
@@ -210,8 +301,36 @@ var ModelClient = class {
         }
       }, (error) => finish(error instanceof ModelError ? error : new ModelError("network")));
     });
+  }
+  /**
+   * Sends the body with the next key in rotation. A non-200 is recorded against
+   * the key that served it and the request moves on to the next account, so one
+   * rate limited, exhausted or dead account cannot block the pool.
+   */
+  async post(body, signal) {
+    validateProfile(this.profile);
     if (signal?.aborted) throw new ModelError("cancelled");
-    return data;
+    const anonymous = this.pool.size === 0;
+    const attempts = anonymous ? 1 : this.pool.size;
+    let lastError = null;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      const key = anonymous ? null : this.pool.take() ?? null;
+      if (!anonymous && !key) break;
+      const started = Date.now();
+      try {
+        const data = await this.sendOnce(body, key, signal);
+        if (key) this.pool.record(key, "healthy", Date.now() - started, 200);
+        if (signal?.aborted) throw new ModelError("cancelled");
+        return data;
+      } catch (error) {
+        const failure = error instanceof ModelError ? error : new ModelError("network");
+        if (failure.code !== "http") throw failure;
+        if (key) this.pool.record(key, classifyStatus(failure.status), Date.now() - started, failure.status);
+        lastError = failure;
+      }
+    }
+    if (signal?.aborted) throw new ModelError("cancelled");
+    throw lastError ?? new ModelError("quota");
   }
   /** Sends one question per enabled tag and returns the parsed decisions. */
   async evaluateNote(state, tags, signal) {
@@ -266,10 +385,10 @@ var ModelClient = class {
 };
 
 // src/settings.ts
-var import_obsidian4 = require("obsidian");
+var import_obsidian5 = require("obsidian");
 
 // src/batchTagModal.ts
-var import_obsidian2 = require("obsidian");
+var import_obsidian3 = require("obsidian");
 
 // src/i18n.ts
 var LANGUAGES = ["zh", "en"];
@@ -303,9 +422,6 @@ var translations = {
     "settings.section.general": "\u57FA\u672C\u914D\u7F6E",
     "settings.language.name": "\u754C\u9762\u8BED\u8A00",
     "settings.language.desc": "\u9009\u62E9\u63D2\u4EF6\u754C\u9762\u6240\u4F7F\u7528\u7684\u8BED\u8A00\uFF08\u652F\u6301\u7B80\u4F53\u4E2D\u6587\u4E0E English\uFF09\u3002",
-    "settings.apiKey.name": "Jev API \u5BC6\u94A5",
-    "settings.apiKey.desc": "TypeSafe Jev \u5B98\u65B9 API \u5BC6\u94A5\uFF0C\u8F93\u5165\u540E\u81EA\u52A8\u91C7\u7528\u5BC6\u7801\u63A9\u7801\u4FDD\u62A4\u3002",
-    "settings.apiKey.toggleTooltip": "\u5207\u6362\u663E\u793A/\u9690\u85CF API Key",
     "settings.threshold.name": "\u81EA\u52A8\u5E94\u7528\u9608\u503C",
     "settings.threshold.desc": "\u6A21\u578B\u5224\u5B9A\u5339\u914D\u4E14\u5206\u6570\u8FBE\u5230\u9608\u503C\u65F6\u624D\u81EA\u52A8\u5199\u5165\uFF1B\u5176\u4ED6\u7ED3\u679C\u4ECD\u53EF\u67E5\u770B\u3002",
     "settings.section.actions": "\u77E5\u8BC6\u5E93\u64CD\u4F5C",
@@ -367,8 +483,12 @@ var translations = {
     "batch.title": "\u6279\u91CF\u5206\u7C7B",
     "batch.subtitle": "\u8FBE\u5230 {threshold}% \u9608\u503C\u4E14\u88AB\u6A21\u578B\u5224\u5B9A\u5339\u914D\u7684\u6807\u7B7E\uFF0C\u5C06\u81EA\u52A8\u8FFD\u52A0\u5230\u7B14\u8BB0\u3002",
     "batch.scopeLabel": "\u626B\u63CF\u8303\u56F4",
-    "batch.scopeDesc": "\u9009\u62E9\u6587\u4EF6\u5939\u540E\uFF0C\u4E5F\u4F1A\u626B\u63CF\u5176\u4E0B\u7EA7\u6587\u4EF6\u5939\u4E2D\u7684 Markdown \u7B14\u8BB0\u3002",
+    "batch.scopeDesc": "\u9010\u7EA7\u8FDB\u5165\u6587\u4EF6\u5939\uFF1B\u9009\u62E9\u540E\u4E5F\u4F1A\u626B\u63CF\u5176\u4E0B\u7EA7\u6587\u4EF6\u5939\u4E2D\u7684 Markdown \u7B14\u8BB0\u3002",
     "batch.scopeAll": "\u6574\u4E2A\u77E5\u8BC6\u5E93",
+    "batch.scopeToggle": "\u5207\u6362\u626B\u63CF\u8303\u56F4\uFF1A{name}",
+    "batch.scopeUp": "\u4E0A\u4E00\u7EA7",
+    "batch.scopeEmpty": "\u6B64\u6587\u4EF6\u5939\u4E0B\u6CA1\u6709\u5B50\u6587\u4EF6\u5939\u3002",
+    "batch.scopeNotes": "{count} \u7BC7",
     "batch.statScanned": "\u5DF2\u5904\u7406\u7B14\u8BB0",
     "batch.statModified": "\u66F4\u65B0\u7B14\u8BB0",
     "batch.statAdded": "\u65B0\u589E\u6807\u7B7E",
@@ -400,11 +520,24 @@ var translations = {
     "model.modelFixedDesc": "\u5F53\u524D\u63D0\u4F9B\u5546\u6307\u5B9A\u7684\u51B3\u7B56\u6A21\u578B\uFF08\u53EF\u81EA\u5B9A\u4E49\uFF09\u3002",
     "model.idDesc": "\u8F93\u5165\u8981\u4F7F\u7528\u7684\u51B3\u7B56\u6A21\u578B ID\uFF0C\u7559\u7A7A\u65F6\u4F7F\u7528\u63D0\u4F9B\u5546\u9ED8\u8BA4\u6A21\u578B\u3002",
     "model.idPlaceholder": "\u7559\u7A7A\u5219\u4F7F\u7528\u9ED8\u8BA4\u6A21\u578B",
-    "model.keyDesc": "\u8F93\u5165\u6240\u9009\u63D0\u4F9B\u5546\u7684 API Key\uFF0C\u4FDD\u5B58\u5728\u672C\u5730\u914D\u7F6E\u4E2D\u3002",
-    "model.test": "\u6D4B\u8BD5\u8FDE\u63A5",
-    "model.testDesc": "\u53D1\u9001\u5185\u7F6E\u6D4B\u8BD5\u8BF7\u6C42\uFF0C\u9A8C\u8BC1 API Key \u4E0E\u670D\u52A1\u8FDE\u901A\u6027\u3002",
-    "model.testing": "\u6B63\u5728\u6D4B\u8BD5\u8FDE\u63A5\u2026",
-    "model.testOk": "\u8FDE\u63A5\u6210\u529F\uFF0C\u54CD\u5E94\u6A21\u578B\uFF1A{model}",
+    "key.pool.heading": "\u8D26\u53F7\u6C60",
+    "key.pool.desc": "\u6BCF\u4E2A\u8D26\u53F7\u4E00\u4E2A Key\u3002\u8BF7\u6C42\u6309\u987A\u5E8F\u8F6E\u8BE2\uFF1B\u9047\u5230\u975E 200 \u4F1A\u8DF3\u8FC7\u8BE5 Key \u6362\u4E0B\u4E00\u4E2A\u8D26\u53F7\uFF0C401/402/403 \u7684\u8D26\u53F7\u81EA\u52A8\u9000\u51FA\u8F6E\u8BE2\u3002",
+    "key.pool.empty": "\u5C1A\u672A\u6DFB\u52A0\u4EFB\u4F55 Key\u3002",
+    "key.pool.addDesc": "\u6DFB\u52A0\u4E00\u4E2A\u8D26\u53F7\u7684 Key\uFF08\u591A\u8D26\u53F7\u8BF7\u9010\u4E2A\u6DFB\u52A0\uFF09\u3002",
+    "key.pool.add": "\u6DFB\u52A0 Key",
+    "key.pool.duplicate": "\u8BE5 Key \u5DF2\u5728\u8D26\u53F7\u6C60\u4E2D\u3002",
+    "key.pool.remove": "\u4ECE\u8D26\u53F7\u6C60\u79FB\u9664\u6B64 Key",
+    "key.pool.reveal": "\u663E\u793A / \u9690\u85CF\u5B8C\u6574 Key",
+    "key.pool.check": "\u68C0\u6D4B\u5168\u90E8\u8D26\u53F7",
+    "key.pool.checkDesc": "\u9010\u4E2A\u8D26\u53F7\u53D1\u9001\u5185\u7F6E\u6D4B\u8BD5\u8BF7\u6C42\uFF0C\u8BB0\u5F55\u53EF\u7528\u72B6\u6001\u4E0E\u5EF6\u8FDF\u3002",
+    "key.pool.checking": "\u6B63\u5728\u68C0\u6D4B {count} \u4E2A\u8D26\u53F7\u2026",
+    "key.pool.summary": "\u53EF\u7528 {usable}/{total} \xB7 {percent}% \xB7 \u5E73\u5747\u5EF6\u8FDF {latency}ms",
+    "key.status.healthy": "\u{1F7E2} \u5065\u5EB7\u53EF\u7528 (200)",
+    "key.status.limited": "\u{1F7E1} \u9891\u7387\u9650\u6D41 (429) \xB7 \u4FDD\u62A4\u4FDD\u7559",
+    "key.status.invalid": "\u{1F534} \u51ED\u636E\u65E0\u6548 (401)",
+    "key.status.banned": "\u26D4 \u63A8\u7406\u5C01\u7981 (403)",
+    "key.status.exhausted": "\u{1F7E3} \u989D\u5EA6\u8017\u5C3D (402)",
+    "key.status.unknown": "\u26AA \u5F85\u68C0\u6D4B",
     "model.remove": "\u5220\u9664\u914D\u7F6E",
     "model.confirmRemove": "\u786E\u8BA4\u5220\u9664\u6B64\u914D\u7F6E",
     "error.config": "\u8BF7\u68C0\u67E5 Base URL \u4E0E API Key\uFF1B\u5730\u5740\u9700\u8981\u662F\u53EF\u8BBF\u95EE\u7684 http(s) \u670D\u52A1\u3002",
@@ -412,9 +545,9 @@ var translations = {
     "error.timeout": "\u8BF7\u6C42\u8D85\u8FC7 60 \u79D2\uFF0C\u8BF7\u68C0\u67E5\u670D\u52A1\u540E\u91CD\u8BD5\u3002",
     "error.response": "\u6A21\u578B\u8FD4\u56DE\u683C\u5F0F\u65E0\u6548\u6216\u7ED3\u679C\u4E0D\u5B8C\u6574\uFF0C\u672C\u6B21\u672A\u5199\u5165\u6807\u7B7E\u3002",
     "error.http": "\u670D\u52A1\u8FD4\u56DE HTTP {status}\uFF0C\u8BF7\u68C0\u67E5\u8BA4\u8BC1\u3001\u5730\u5740\u3001\u6A21\u578B\u6743\u9650\u6216\u914D\u989D\u3002",
+    "error.quota": "\u8D26\u53F7\u6C60\u4E2D\u6CA1\u6709\u53EF\u7528 Key\uFF08\u9650\u6D41\u3001\u989D\u5EA6\u4E0D\u8DB3\u6216\u88AB\u5C01\u7981\uFF09\uFF0C\u8BF7\u5728\u8BBE\u7F6E\u4E2D\u68C0\u67E5\u8D26\u53F7\u6C60\u3002",
     "error.cancelled": "\u5DF2\u505C\u6B62\u8BF7\u6C42\uFF0C\u540E\u7EED\u8FD4\u56DE\u7684\u7ED3\u679C\u4E0D\u4F1A\u5199\u5165\u3002",
     "error.noTags": "\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u626B\u63CF\u6807\u7B7E\u5E93\uFF0C\u5E76\u542F\u7528\u81F3\u5C11\u4E00\u4E2A\u6807\u7B7E\u3002",
-    "progress.stages": "\u5206\u7C7B\u9636\u6BB5",
     "progress.reading": "\u8BFB\u53D6\u7B14\u8BB0",
     "progress.evaluating": "\u6A21\u578B\u5224\u65AD",
     "progress.writing": "\u5199\u5165\u6807\u7B7E",
@@ -461,9 +594,6 @@ var translations = {
     "settings.section.general": "General",
     "settings.language.name": "Interface Language",
     "settings.language.desc": "Choose the display language for the plugin interface.",
-    "settings.apiKey.name": "Jev API Key",
-    "settings.apiKey.desc": "Your official TypeSafe Jev API key, automatically masked as password dots after entry.",
-    "settings.apiKey.toggleTooltip": "Toggle API Key visibility",
     "settings.threshold.name": "Automatic application threshold",
     "settings.threshold.desc": "Automatic writes require a matching decision and a score at or above this threshold. Other results remain available for review.",
     "settings.section.actions": "Vault actions",
@@ -525,8 +655,12 @@ var translations = {
     "batch.title": "Batch classification",
     "batch.subtitle": "Tags with a matching decision and score \u2265 {threshold}% will be appended to notes.",
     "batch.scopeLabel": "Scan scope",
-    "batch.scopeDesc": "Selecting a folder also includes Markdown notes in its subfolders.",
+    "batch.scopeDesc": "Step into folders one level at a time. Selecting a folder also includes Markdown notes in its subfolders.",
     "batch.scopeAll": "Entire vault",
+    "batch.scopeToggle": "Toggle scan scope: {name}",
+    "batch.scopeUp": "Up one level",
+    "batch.scopeEmpty": "No subfolders here.",
+    "batch.scopeNotes": "{count} notes",
     "batch.statScanned": "Processed notes",
     "batch.statModified": "Updated notes",
     "batch.statAdded": "Tags added",
@@ -558,11 +692,24 @@ var translations = {
     "model.modelFixedDesc": "Decision model specified for this provider (customizable).",
     "model.idDesc": "Decision model ID to use. Leave empty for provider default.",
     "model.idPlaceholder": "Leave empty for default",
-    "model.keyDesc": "Enter API Key for the selected provider. Saved locally.",
-    "model.test": "Test Connection",
-    "model.testDesc": "Sends a test request to verify API Key and connectivity.",
-    "model.testing": "Testing connection\u2026",
-    "model.testOk": "Connected successfully, model: {model}",
+    "key.pool.heading": "Account Pool",
+    "key.pool.desc": "One key per account. Requests rotate in order; a non-200 skips that key and moves to the next account, and 401/402/403 accounts drop out of rotation.",
+    "key.pool.empty": "No keys yet.",
+    "key.pool.addDesc": "Add the key of one account (repeat for every account).",
+    "key.pool.add": "Add Key",
+    "key.pool.duplicate": "That key is already in the pool.",
+    "key.pool.remove": "Remove this key from the pool",
+    "key.pool.reveal": "Show / hide the full key",
+    "key.pool.check": "Check All Accounts",
+    "key.pool.checkDesc": "Sends the built-in test request to each account and records availability and latency.",
+    "key.pool.checking": "Checking {count} accounts\u2026",
+    "key.pool.summary": "Usable {usable}/{total} \xB7 {percent}% \xB7 avg latency {latency}ms",
+    "key.status.healthy": "\u{1F7E2} Healthy (200)",
+    "key.status.limited": "\u{1F7E1} Rate limited (429) \xB7 reserved",
+    "key.status.invalid": "\u{1F534} Invalid credentials (401)",
+    "key.status.banned": "\u26D4 Inference banned (403)",
+    "key.status.exhausted": "\u{1F7E3} Quota exhausted (402)",
+    "key.status.unknown": "\u26AA Unchecked",
     "model.remove": "Delete profile",
     "model.confirmRemove": "Confirm deletion",
     "error.config": "Check the base URL and API key; the address must be a reachable http(s) service.",
@@ -570,9 +717,9 @@ var translations = {
     "error.timeout": "Request exceeded 60 seconds. Check the service and retry.",
     "error.response": "Invalid or incomplete model response. No tags were written for this request.",
     "error.http": "Service returned HTTP {status}. Check credentials, endpoint, model access or quota.",
+    "error.quota": "No usable key in the account pool (rate limited, out of credit or banned). Check the pool in settings.",
     "error.cancelled": "Request stopped. Late results will not be applied.",
     "error.noTags": "Sync your tag library and enable at least one tag in settings first.",
-    "progress.stages": "Classification stages",
     "progress.reading": "Read note",
     "progress.evaluating": "Evaluate",
     "progress.writing": "Apply tags",
@@ -607,34 +754,17 @@ function t(language, key, params) {
 // src/progressView.ts
 var ProgressView = class {
   constructor(container, language) {
-    this.language = language;
     const panel = container.createDiv({ cls: "jev-progress-panel" });
-    const track = panel.createDiv({ cls: "jev-stage-track", attr: { "aria-label": t(language, "progress.stages") } });
-    this.stages = ["reading", "evaluating", "writing"].map((stage, index) => {
-      const item = track.createDiv({ cls: "jev-stage" });
-      item.createSpan({ cls: "jev-stage-number", text: String(index + 1), attr: { "aria-hidden": "true" } });
-      item.createSpan({ text: t(language, `progress.${stage}`) });
-      return item;
-    });
     const heading = panel.createDiv({ cls: "jev-progress-heading" });
     this.status = heading.createDiv({ cls: "jev-progress-status", attr: { role: "status", "aria-live": "polite", "aria-atomic": "true" } });
     this.percentage = heading.createSpan({ cls: "jev-progress-percent" });
     this.bar = panel.createEl("progress", { cls: "jev-native-progress", attr: { max: "100", value: "0", "aria-label": t(language, "progress.completed") } });
   }
-  stage(stage) {
-    const current = stage ? ["reading", "evaluating", "writing", "done"].indexOf(stage) : -1;
-    this.stages.forEach((item, index) => {
-      item.toggleClass("is-active", index === current);
-      item.toggleClass("is-complete", current > index);
-      if (index === current) item.setAttribute("aria-current", "step");
-      else item.removeAttribute("aria-current");
-    });
-  }
   update(completed, total) {
-    const value = total > 0 ? Math.floor(completed / total * 100) : 0;
-    this.bar.value = value;
-    this.percentage.setText(`${value}%`);
+    this.bar.value = total > 0 ? Math.floor(completed / total * 100) : 0;
+    this.percentage.setText(`${this.bar.value}%`);
   }
+  /** Unknown total: a moving bar with no percentage, used by the single note flow. */
   indeterminate() {
     this.bar.removeAttribute("value");
     this.percentage.setText("");
@@ -645,12 +775,142 @@ function duration(milliseconds) {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
+// src/scopePicker.ts
+var import_obsidian2 = require("obsidian");
+var ScopePicker = class {
+  constructor(app, container, language, onChange, countNotes) {
+    this.app = app;
+    this.language = language;
+    this.onChange = onChange;
+    this.countNotes = countNotes;
+    this.path = "";
+    this.open = false;
+    this.disabled = false;
+    this.el = container.createDiv({ cls: "jev-scope is-collapsed" });
+    this.render();
+  }
+  get value() {
+    return this.path;
+  }
+  setDisabled(disabled) {
+    this.disabled = disabled;
+    this.el.classList.toggle("is-disabled", disabled);
+    this.el.querySelectorAll("button").forEach((button) => {
+      button.disabled = disabled;
+    });
+    this.el.querySelector(".jev-scope-toggle")?.setAttribute("aria-disabled", String(disabled));
+  }
+  tr(key, params) {
+    return t(this.language(), key, params);
+  }
+  childFolders() {
+    const parent = this.path ? this.app.vault.getAbstractFileByPath(this.path) : this.app.vault.getRoot();
+    if (!(parent instanceof import_obsidian2.TFolder)) return [];
+    return parent.children.filter((child) => child instanceof import_obsidian2.TFolder).sort((a, b) => a.name.localeCompare(b.name));
+  }
+  enter(path) {
+    this.path = path;
+    this.onChange(path);
+    this.render();
+  }
+  render() {
+    this.el.empty();
+    this.el.toggleClass("is-collapsed", !this.open);
+    this.renderToggle();
+    if (!this.open) return;
+    this.el.createDiv({ cls: "jev-scope-desc", text: this.tr("batch.scopeDesc") });
+    this.renderTrail();
+    this.renderList();
+  }
+  renderToggle() {
+    const label = this.path || this.app.vault.getName();
+    const toggle = this.el.createDiv({
+      cls: "jev-scope-toggle",
+      attr: {
+        role: "button",
+        tabindex: this.disabled ? "-1" : "0",
+        "aria-expanded": String(this.open),
+        "aria-disabled": String(this.disabled),
+        "aria-label": this.tr("batch.scopeToggle", { name: label })
+      }
+    });
+    (0, import_obsidian2.setIcon)(toggle, this.open ? "folder-open" : "folder");
+    toggle.createSpan({ cls: "jev-scope-name", text: label });
+    toggle.createSpan({ cls: "jev-scope-count", text: this.tr("batch.scopeNotes", { count: this.countNotes(this.path) }) });
+    (0, import_obsidian2.setIcon)(toggle.createSpan({ cls: "jev-scope-caret" }), this.open ? "chevron-up" : "chevron-down");
+    const flip = () => {
+      if (this.disabled) return;
+      this.open = !this.open;
+      this.render();
+    };
+    toggle.onclick = flip;
+    toggle.onkeydown = (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        flip();
+      }
+    };
+  }
+  renderTrail() {
+    const trail = this.el.createDiv({ cls: "jev-scope-trail" });
+    this.crumb(trail, "", this.tr("batch.scopeAll"), this.path === "");
+    let prefix = "";
+    for (const segment of this.path.split("/").filter(Boolean)) {
+      prefix = prefix ? `${prefix}/${segment}` : segment;
+      trail.createSpan({ cls: "jev-scope-sep", text: "/" });
+      this.crumb(trail, prefix, segment, prefix === this.path);
+    }
+  }
+  renderList() {
+    const list = this.el.createDiv({ cls: "jev-scope-list" });
+    if (this.path) {
+      const up = list.createDiv({ cls: "jev-scope-row" });
+      const parent = this.path.split("/").slice(0, -1).join("/");
+      this.pick(up, "corner-up-left", this.tr("batch.scopeUp"), "", () => this.enter(parent));
+    }
+    const children = this.childFolders();
+    if (!children.length) {
+      list.createDiv({ cls: "jev-scope-empty", text: this.tr("batch.scopeEmpty") });
+    }
+    for (const child of children) {
+      const row = list.createDiv({ cls: "jev-scope-row" });
+      this.pick(row, "folder", child.name, this.tr("batch.scopeNotes", { count: this.countNotes(child.path) }), () => this.enter(child.path));
+    }
+  }
+  crumb(trail, path, label, current) {
+    const crumb = trail.createEl("button", { cls: `jev-scope-crumb${current ? " is-current" : ""}`, text: label });
+    crumb.onclick = () => this.enter(path);
+  }
+  pick(row, icon, label, meta, onPick) {
+    const button = row.createEl("button", { cls: "jev-scope-pick" });
+    (0, import_obsidian2.setIcon)(button, icon);
+    button.createSpan({ cls: "jev-scope-name", text: label });
+    if (meta) button.createSpan({ cls: "jev-scope-count", text: meta });
+    button.onclick = onPick;
+  }
+};
+
 // src/batchTagModal.ts
-function inBatchScope(path, folder) {
-  if (folder && !path.startsWith(`${folder}/`)) return false;
+function isScannablePath(path) {
   return !path.startsWith(".") && !path.includes("/.") && !path.includes("\\.") && !/templates|模板/i.test(path);
 }
-var BatchTagModal = class extends import_obsidian2.Modal {
+function inBatchScope(path, folder) {
+  if (folder && !path.startsWith(`${folder}/`)) return false;
+  return isScannablePath(path);
+}
+function countNotesByFolder(paths) {
+  const counts = /* @__PURE__ */ new Map();
+  for (const path of paths) {
+    if (!isScannablePath(path)) continue;
+    const segments = path.split("/");
+    for (let depth = segments.length - 1; depth > 0; depth--) {
+      const folder = segments.slice(0, depth).join("/");
+      counts.set(folder, (counts.get(folder) ?? 0) + 1);
+    }
+  }
+  return counts;
+}
+var BatchTagModal = class extends import_obsidian3.Modal {
   constructor(app, plugin) {
     super(app);
     this.plugin = plugin;
@@ -664,6 +924,8 @@ var BatchTagModal = class extends import_obsidian2.Modal {
     this.unchanged = 0;
     this.total = 0;
     this.startedAt = 0;
+    this.counts = /* @__PURE__ */ new Map();
+    this.countIn = (path) => path ? this.counts.get(path) ?? 0 : this.files().length;
   }
   tr(key, params) {
     return t(this.plugin.settings.language, key, params);
@@ -681,15 +943,17 @@ var BatchTagModal = class extends import_obsidian2.Modal {
     header.createDiv({ cls: "jev-tagger-subtitle", text: this.tr("batch.subtitle", { threshold: Math.round(this.plugin.settings.confidenceThreshold * 100) }) });
     this.modelLabel = header.createDiv({ cls: "jev-model-label" });
     this.updateModelLabel();
-    new import_obsidian2.Setting(this.contentEl).setName(this.tr("batch.scopeLabel")).setDesc(this.tr("batch.scopeDesc")).addDropdown((dropdown) => {
-      dropdown.addOption("", this.tr("batch.scopeAll"));
-      this.app.vault.getAllLoadedFiles().filter((file) => file instanceof import_obsidian2.TFolder && file.path !== "/" && file.path.length > 0).map((file) => file.path).sort((a, b) => a.localeCompare(b)).forEach((path) => dropdown.addOption(path, path));
-      dropdown.setValue(this.folder).onChange((path) => {
+    this.counts = countNotesByFolder(this.app.vault.getMarkdownFiles().map((file) => file.path));
+    this.picker = new ScopePicker(
+      this.app,
+      this.contentEl,
+      () => this.plugin.settings.language,
+      (path) => {
         this.folder = path;
         this.ready();
-      });
-      this.scopeSelect = dropdown.selectEl;
-    });
+      },
+      (path) => this.countIn(path)
+    );
     this.progress = new ProgressView(this.contentEl, this.plugin.settings.language);
     this.currentFile = this.contentEl.createDiv({ cls: "jev-batch-current-file" });
     const stats = this.contentEl.createDiv({ cls: "jev-batch-stats" });
@@ -717,11 +981,11 @@ var BatchTagModal = class extends import_obsidian2.Modal {
     this.modelLabel.setText(`${this.plugin.activeModel.name} \xB7 ${this.plugin.activeModel.model} \xB7 ${Math.round(this.plugin.settings.confidenceThreshold * 100)}%`);
   }
   ready() {
+    this.counts = countNotesByFolder(this.app.vault.getMarkdownFiles().map((file) => file.path));
     this.total = this.files().length;
     this.processed = this.modified = this.added = this.failed = this.unchanged = 0;
     this.startedAt = 0;
     this.refresh();
-    this.progress.stage();
     this.currentFile.setText("");
     this.progress.status.setText(this.tr("batch.readyCount", { count: this.total }));
     this.start.disabled = this.total === 0;
@@ -771,7 +1035,8 @@ var BatchTagModal = class extends import_obsidian2.Modal {
     this.controller = this.plugin.createController();
     const signal = this.controller.signal;
     this.startedAt = Date.now();
-    this.start.disabled = this.scopeSelect.disabled = true;
+    this.start.disabled = true;
+    this.picker.setDisabled(true);
     this.stop.setText(this.tr("batch.stopButton"));
     const timer = setInterval(() => this.refresh(), 1e3);
     try {
@@ -784,12 +1049,10 @@ var BatchTagModal = class extends import_obsidian2.Modal {
         try {
           const results = await this.plugin.evaluateFile(file, session, signal, (stage) => {
             if (this.closed) return;
-            this.progress.stage(stage);
             this.progress.status.setText(this.tr(`progress.${stage}`));
           });
           if (signal.aborted) break;
           const eligible = results.filter((result) => isEligible(result, session.threshold));
-          this.progress.stage("writing");
           this.progress.status.setText(this.tr("progress.writing"));
           for (const result of eligible) {
             if (signal.aborted) break;
@@ -810,7 +1073,7 @@ var BatchTagModal = class extends import_obsidian2.Modal {
           this.failed++;
           finished = true;
           this.addLog(this.tr("batch.logError", { name: file.basename, error: this.plugin.errorText(error) }), "error");
-          if (error instanceof ModelError && (error.code === "config" || error.code === "http" && [401, 403, 404, 429].includes(error.status))) this.controller.abort();
+          if (error instanceof ModelError && (error.code === "config" || error.code === "quota" || error.code === "http" && [401, 402, 403, 404, 429].includes(error.status))) this.controller.abort();
         } finally {
           if (addedNames.length) {
             this.modified++;
@@ -828,14 +1091,14 @@ var BatchTagModal = class extends import_obsidian2.Modal {
       this.running = this.plugin.batchRunning = false;
       if (!this.closed) {
         const key = signal.aborted ? "batch.cancelled" : this.failed ? "batch.withErrors" : "batch.allDone";
-        this.progress.stage(signal.aborted || this.failed ? void 0 : "done");
         this.progress.status.setText(this.tr(key, { failed: this.failed }));
         this.currentFile.setText(this.tr("batch.summary", { processed: this.processed, total: this.total, modified: this.modified, added: this.added }));
         this.refresh();
-        this.start.disabled = this.stop.disabled = this.scopeSelect.disabled = false;
+        this.start.disabled = this.stop.disabled = false;
+        this.picker.setDisabled(false);
         this.start.setText(this.tr("batch.rescanButton"));
         this.stop.setText(this.tr("batch.close"));
-        new import_obsidian2.Notice(this.tr(key, { failed: this.failed }));
+        new import_obsidian3.Notice(this.tr(key, { failed: this.failed }));
       }
     }
   }
@@ -847,8 +1110,8 @@ var BatchTagModal = class extends import_obsidian2.Modal {
 };
 
 // src/tagModal.ts
-var import_obsidian3 = require("obsidian");
-var TagModal = class extends import_obsidian3.Modal {
+var import_obsidian4 = require("obsidian");
+var TagModal = class extends import_obsidian4.Modal {
   constructor(app, plugin, tag, onSaved = () => {
   }) {
     super(app);
@@ -867,7 +1130,7 @@ var TagModal = class extends import_obsidian3.Modal {
     let instructions = this.tag ? this.tag.instructions : "";
     let matchCriteria = this.tag ? this.tag.matchCriteria : "";
     let otherCriteria = this.tag ? this.tag.otherCriteria : "";
-    const nameSetting = new import_obsidian3.Setting(contentEl).setName(t(lang, "tagModal.name")).setDesc(t(lang, "tagModal.nameDesc"));
+    const nameSetting = new import_obsidian4.Setting(contentEl).setName(t(lang, "tagModal.name")).setDesc(t(lang, "tagModal.nameDesc"));
     nameSetting.addText((text) => {
       text.setPlaceholder(t(lang, "tagModal.namePlaceholder")).setValue(name).onChange((val) => {
         name = val;
@@ -876,21 +1139,21 @@ var TagModal = class extends import_obsidian3.Modal {
         text.setDisabled(true);
       }
     });
-    new import_obsidian3.Setting(contentEl).setName(t(lang, "tagModal.instructions")).setDesc(t(lang, "tagModal.instructionsDesc")).addTextArea((ta) => {
+    new import_obsidian4.Setting(contentEl).setName(t(lang, "tagModal.instructions")).setDesc(t(lang, "tagModal.instructionsDesc")).addTextArea((ta) => {
       ta.setPlaceholder(t(lang, "tagModal.instructionsPlaceholder")).setValue(instructions).onChange((val) => {
         instructions = val;
       });
       ta.inputEl.rows = 2;
       ta.inputEl.addClass("jev-modal-textarea");
     });
-    new import_obsidian3.Setting(contentEl).setName(t(lang, "tagModal.matchCriteria")).setDesc(t(lang, "tagModal.matchCriteriaDesc")).addTextArea((ta) => {
+    new import_obsidian4.Setting(contentEl).setName(t(lang, "tagModal.matchCriteria")).setDesc(t(lang, "tagModal.matchCriteriaDesc")).addTextArea((ta) => {
       ta.setPlaceholder(t(lang, "tagModal.matchCriteriaPlaceholder")).setValue(matchCriteria).onChange((val) => {
         matchCriteria = val;
       });
       ta.inputEl.rows = 2;
       ta.inputEl.addClass("jev-modal-textarea");
     });
-    new import_obsidian3.Setting(contentEl).setName(t(lang, "tagModal.otherCriteria")).setDesc(t(lang, "tagModal.otherCriteriaDesc")).addTextArea((ta) => {
+    new import_obsidian4.Setting(contentEl).setName(t(lang, "tagModal.otherCriteria")).setDesc(t(lang, "tagModal.otherCriteriaDesc")).addTextArea((ta) => {
       ta.setPlaceholder(t(lang, "tagModal.otherCriteriaPlaceholder")).setValue(otherCriteria).onChange((val) => {
         otherCriteria = val;
       });
@@ -915,7 +1178,7 @@ var TagModal = class extends import_obsidian3.Modal {
             matchCriteria,
             otherCriteria
           });
-          new import_obsidian3.Notice(t(lang, "tagModal.editSuccess", { tag: this.tag.name }));
+          new import_obsidian4.Notice(t(lang, "tagModal.editSuccess", { tag: this.tag.name }));
         } else {
           const cleanName = name.replace(/^#/, "").trim();
           await this.plugin.addTagDefinition({
@@ -925,12 +1188,12 @@ var TagModal = class extends import_obsidian3.Modal {
             otherCriteria,
             enabled: true
           });
-          new import_obsidian3.Notice(t(lang, "tagModal.createSuccess", { tag: cleanName }));
+          new import_obsidian4.Notice(t(lang, "tagModal.createSuccess", { tag: cleanName }));
         }
         this.onSaved();
         this.close();
       } catch (err) {
-        new import_obsidian3.Notice(err?.message || String(err));
+        new import_obsidian4.Notice(err?.message || String(err));
         submitBtn.disabled = false;
       }
     };
@@ -941,35 +1204,103 @@ var TagModal = class extends import_obsidian3.Modal {
   }
 };
 
+// src/keyProbe.ts
+async function probeKeys(profile, pool, signal) {
+  let servedModel2 = "";
+  for (const key of pool.keys) {
+    if (signal?.aborted) break;
+    const started = Date.now();
+    try {
+      const detected = await new ModelClient(profile, new KeyPool([key])).detect(signal);
+      pool.record(key, "healthy", Date.now() - started, 200);
+      servedModel2 = servedModel2 || detected.model;
+    } catch (error) {
+      const failure = error instanceof ModelError ? error : new ModelError("network");
+      const status = failure.code === "http" ? classifyStatus(failure.status) : "unknown";
+      pool.record(key, status, Date.now() - started, failure.status);
+      if (failure.code === "cancelled") break;
+    }
+  }
+  return servedModel2;
+}
+
 // src/settings.ts
 var DEFAULT_SETTINGS = {
   provider: "typesafe",
   apiKeys: {
-    typesafe: "",
-    openrouter: ""
+    typesafe: [],
+    openrouter: []
   },
   models: [
-    { id: "typesafe", name: "TypeSafe", endpoint: PROVIDERS.typesafe.endpoint, model: PROVIDERS.typesafe.model, apiKey: "" },
-    { id: "openrouter", name: "OpenRouter", endpoint: PROVIDERS.openrouter.endpoint, model: PROVIDERS.openrouter.model, apiKey: "" }
+    { id: "typesafe", name: "TypeSafe", endpoint: PROVIDERS.typesafe.endpoint, model: PROVIDERS.typesafe.model },
+    { id: "openrouter", name: "OpenRouter", endpoint: PROVIDERS.openrouter.endpoint, model: PROVIDERS.openrouter.model }
   ],
   activeModelId: "typesafe",
   language: "zh",
   confidenceThreshold: 0.7,
   tags: []
 };
-var JevTaggerSettingTab = class extends import_obsidian4.PluginSettingTab {
+var JevTaggerSettingTab = class extends import_obsidian5.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
   }
+  tr(key, params) {
+    return t(this.plugin.settings.language, key, params);
+  }
+  poolKeys() {
+    return this.plugin.settings.apiKeys?.[this.plugin.settings.provider] || [];
+  }
+  async setPoolKeys(keys) {
+    this.plugin.settings.apiKeys[this.plugin.settings.provider] = keys;
+    await this.plugin.saveSettings();
+  }
+  /**
+   * One row per account: the masked key, the health the pool recorded for it,
+   * and the latency of its last successful answer. Rows are derived from the
+   * pool, never stored, so a re-render always shows the live state.
+   */
+  renderKeyPool(container, remove) {
+    const keys = this.poolKeys();
+    const pool = this.plugin.keyPool;
+    if (!keys.length) {
+      container.createDiv({ cls: "jev-key-empty", text: this.tr("key.pool.empty") });
+      return;
+    }
+    keys.forEach((key, index) => {
+      const state = pool.state(key);
+      const row = container.createDiv({ cls: `jev-key-row is-${state.status}` });
+      let revealed = false;
+      const secret = row.createSpan({ cls: "jev-key-secret", text: maskKey(key) });
+      row.createSpan({
+        cls: "jev-key-status",
+        text: state.latencyMs ? `${this.tr(`key.status.${state.status}`)} \xB7 ${state.latencyMs}ms` : this.tr(`key.status.${state.status}`)
+      });
+      new import_obsidian5.Setting(row).addExtraButton((button) => button.setIcon("eye-off").setTooltip(this.tr("key.pool.reveal")).onClick(() => {
+        revealed = !revealed;
+        secret.setText(revealed ? key : maskKey(key));
+        button.setIcon(revealed ? "eye" : "eye-off");
+      })).addExtraButton((button) => button.setIcon("trash-2").setTooltip(this.tr("key.pool.remove")).onClick(() => remove(index)));
+    });
+    const summary = pool.summary();
+    container.createDiv({
+      cls: "jev-key-summary",
+      text: this.tr("key.pool.summary", {
+        usable: summary.usable,
+        total: summary.total,
+        percent: Math.round(summary.percent * 100),
+        latency: summary.avgLatencyMs
+      })
+    });
+  }
   renderModels(container) {
-    const lang = this.plugin.settings.language;
-    const tr = (key, params) => t(lang, key, params);
-    new import_obsidian4.Setting(container).setHeading().setName(tr("model.heading")).setDesc(tr("model.desc"));
+    const tr = (key, params) => t(this.plugin.settings.language, key, params);
+    let checking = false;
+    new import_obsidian5.Setting(container).setHeading().setName(tr("model.heading")).setDesc(tr("model.desc"));
     const panel = container.createDiv({ cls: "jev-model-panel" });
     const activeProvider = this.plugin.settings.provider || "typesafe";
     const profile = this.plugin.activeModel;
-    new import_obsidian4.Setting(panel).setName(tr("model.provider")).setDesc(tr("model.providerDesc")).addDropdown((dropdown) => {
+    new import_obsidian5.Setting(panel).setName(tr("model.provider")).setDesc(tr("model.providerDesc")).addDropdown((dropdown) => {
       dropdown.addOption("typesafe", "TypeSafe");
       dropdown.addOption("openrouter", "OpenRouter");
       dropdown.setValue(activeProvider).onChange(async (val) => {
@@ -982,7 +1313,7 @@ var JevTaggerSettingTab = class extends import_obsidian4.PluginSettingTab {
     });
     let modelInput;
     const defaultModel = PROVIDERS[activeProvider]?.model || "jev-latest";
-    new import_obsidian4.Setting(panel).setName(tr("model.id")).setDesc(tr("model.idDesc")).addText((text) => {
+    new import_obsidian5.Setting(panel).setName(tr("model.id")).setDesc(tr("model.idDesc")).addText((text) => {
       modelInput = text.inputEl;
       text.setPlaceholder(defaultModel).setValue(profile.model).onChange(async (value) => {
         const val = value.trim();
@@ -992,49 +1323,66 @@ var JevTaggerSettingTab = class extends import_obsidian4.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    let input;
-    new import_obsidian4.Setting(panel).setName("API Key").setDesc(tr("model.keyDesc")).addText((text) => {
-      input = text.inputEl;
-      input.type = "password";
-      input.autocomplete = "off";
-      text.setPlaceholder(activeProvider === "openrouter" ? "sk-or-v1-..." : "apikey_...");
-      text.setValue(profile.apiKey).onChange(async (value) => {
-        const val = value.trim();
-        profile.apiKey = val;
-        if (!this.plugin.settings.apiKeys) {
-          this.plugin.settings.apiKeys = { typesafe: "", openrouter: "" };
-        }
-        this.plugin.settings.apiKeys[this.plugin.settings.provider] = val;
-        const found = this.plugin.settings.models.find((m) => m.id === this.plugin.settings.provider);
-        if (found) found.apiKey = val;
-        await this.plugin.saveSettings();
-      });
-    }).addExtraButton((button) => button.setIcon("eye-off").setTooltip(tr("settings.apiKey.toggleTooltip")).onClick(() => {
-      input.type = input.type === "password" ? "text" : "password";
-      button.setIcon(input.type === "password" ? "eye-off" : "eye");
-    }));
-    const status = panel.createDiv({ cls: "jev-model-status", attr: { role: "status", "aria-live": "polite" } });
-    new import_obsidian4.Setting(panel).setDesc(tr("model.testDesc")).addButton((button) => button.setButtonText(tr("model.test")).setCta().onClick(async () => {
-      button.setDisabled(true);
-      status.setText(tr("model.testing"));
-      const controller = this.plugin.createController();
-      try {
-        const detected = await new ModelClient(profile).detect(controller.signal);
-        if (!profile.model.trim()) {
-          profile.model = detected.model;
-          if (modelInput) modelInput.value = detected.model;
-          const found = this.plugin.settings.models.find((m) => m.id === this.plugin.settings.provider);
-          if (found) found.model = detected.model;
-          await this.plugin.saveSettings();
-        }
-        status.setText(tr("model.testOk", { model: detected.model }));
-      } catch (error) {
-        status.setText(this.plugin.errorText(error));
-      } finally {
-        button.setDisabled(false);
-        this.plugin.releaseController(controller);
+    new import_obsidian5.Setting(panel).setName(tr("key.pool.heading")).setDesc(tr("key.pool.desc"));
+    const list = panel.createDiv({ cls: "jev-key-pool" });
+    const removeKey = async (index) => {
+      await this.setPoolKeys(this.poolKeys().filter((_key, position) => position !== index));
+      this.display();
+    };
+    this.renderKeyPool(list, removeKey);
+    let draft = "";
+    const addKey = async () => {
+      const secret = draft.trim();
+      if (!secret) return;
+      if (this.poolKeys().includes(secret)) {
+        new import_obsidian5.Notice(tr("key.pool.duplicate"));
+        return;
       }
-    }));
+      draft = "";
+      await this.setPoolKeys([...this.poolKeys(), secret]);
+      this.display();
+    };
+    new import_obsidian5.Setting(panel).setDesc(tr("key.pool.addDesc")).addText((text) => {
+      text.inputEl.type = "password";
+      text.inputEl.autocomplete = "off";
+      text.setPlaceholder(activeProvider === "openrouter" ? "sk-or-v1-\u2026" : "apikey_\u2026").onChange((value) => {
+        draft = value;
+      });
+      text.inputEl.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") addKey();
+      });
+    }).addButton((button) => button.setButtonText(tr("key.pool.add")).onClick(addKey));
+    const status = panel.createDiv({ cls: "jev-model-status", attr: { role: "status", "aria-live": "polite" } });
+    const keys = this.poolKeys();
+    new import_obsidian5.Setting(panel).setDesc(tr("key.pool.checkDesc")).addButton((button) => {
+      button.setButtonText(tr("key.pool.check")).setCta();
+      button.setDisabled(checking || !keys.length);
+      button.onClick(async () => {
+        checking = true;
+        button.setDisabled(true);
+        status.setText(tr("key.pool.checking", { count: keys.length }));
+        const controller = this.plugin.createController();
+        let failure = null;
+        try {
+          const served = await probeKeys(this.plugin.activeModel, this.plugin.keyPool, controller.signal);
+          if (served && !this.plugin.activeModel.model.trim()) {
+            this.plugin.activeModel.model = served;
+            if (modelInput) modelInput.value = served;
+            await this.plugin.saveSettings();
+          }
+        } catch (error) {
+          failure = error;
+        }
+        checking = false;
+        this.plugin.releaseController(controller);
+        if (failure) {
+          status.setText(this.plugin.errorText(failure));
+          button.setDisabled(false);
+          return;
+        }
+        this.display();
+      });
+    });
     panel.querySelectorAll(".setting-item").forEach((row) => {
       const label = row.querySelector(".setting-item-name")?.textContent;
       if (label) row.querySelectorAll("input, select").forEach((control) => control.setAttribute("aria-label", label));
@@ -1051,8 +1399,8 @@ var JevTaggerSettingTab = class extends import_obsidian4.PluginSettingTab {
       text: t(lang, "settings.subtitle"),
       cls: "setting-item-description"
     });
-    new import_obsidian4.Setting(containerEl).setHeading().setName(t(lang, "settings.section.general"));
-    new import_obsidian4.Setting(containerEl).setName(t(lang, "settings.language.name")).setDesc(t(lang, "settings.language.desc")).addDropdown((dropdown) => {
+    new import_obsidian5.Setting(containerEl).setHeading().setName(t(lang, "settings.section.general"));
+    new import_obsidian5.Setting(containerEl).setName(t(lang, "settings.language.name")).setDesc(t(lang, "settings.language.desc")).addDropdown((dropdown) => {
       dropdown.selectEl.setAttribute("aria-label", t(lang, "settings.language.name"));
       LANGUAGES.forEach((key) => {
         dropdown.addOption(key, LANGUAGE_OPTIONS[key]);
@@ -1064,7 +1412,7 @@ var JevTaggerSettingTab = class extends import_obsidian4.PluginSettingTab {
       });
     });
     this.renderModels(containerEl);
-    const thresholdSetting = new import_obsidian4.Setting(containerEl).setName(t(lang, "settings.threshold.name")).setDesc(t(lang, "settings.threshold.desc"));
+    const thresholdSetting = new import_obsidian5.Setting(containerEl).setName(t(lang, "settings.threshold.name")).setDesc(t(lang, "settings.threshold.desc"));
     const currentPct = Math.round(this.plugin.settings.confidenceThreshold * 100);
     const badgeEl = thresholdSetting.controlEl.createSpan({
       cls: "jev-threshold-badge",
@@ -1078,19 +1426,19 @@ var JevTaggerSettingTab = class extends import_obsidian4.PluginSettingTab {
       })
     );
     thresholdSetting.controlEl.prepend(badgeEl);
-    new import_obsidian4.Setting(containerEl).setHeading().setName(t(lang, "settings.section.actions"));
-    new import_obsidian4.Setting(containerEl).setName(t(lang, "settings.batch.name")).setDesc(t(lang, "settings.batch.desc")).addButton(
+    new import_obsidian5.Setting(containerEl).setHeading().setName(t(lang, "settings.section.actions"));
+    new import_obsidian5.Setting(containerEl).setName(t(lang, "settings.batch.name")).setDesc(t(lang, "settings.batch.desc")).addButton(
       (btn) => btn.setButtonText(t(lang, "settings.batch.button")).setCta().onClick(() => {
         new BatchTagModal(this.app, this.plugin).open();
       })
     );
-    new import_obsidian4.Setting(containerEl).setName(t(lang, "settings.sync.name")).setDesc(t(lang, "settings.sync.desc")).addButton(
+    new import_obsidian5.Setting(containerEl).setName(t(lang, "settings.sync.name")).setDesc(t(lang, "settings.sync.desc")).addButton(
       (btn) => btn.setButtonText(t(lang, "settings.sync.button")).onClick(async () => {
         await this.plugin.detectAndSyncVaultTags();
         this.display();
       })
     );
-    new import_obsidian4.Setting(containerEl).setHeading().setName(t(lang, "settings.section.tags")).setDesc(t(lang, "settings.tagLibrary.desc"));
+    new import_obsidian5.Setting(containerEl).setHeading().setName(t(lang, "settings.section.tags")).setDesc(t(lang, "settings.tagLibrary.desc"));
     const tags = this.plugin.settings.tags;
     const totalTags = tags.length;
     if (totalTags > 0) {
@@ -1142,7 +1490,7 @@ var JevTaggerSettingTab = class extends import_obsidian4.PluginSettingTab {
           nameEl.title = tag.instructions;
         }
         const toggleContainer = tagCard.createDiv({ cls: "jev-tag-card-toggle" });
-        new import_obsidian4.Setting(toggleContainer).addToggle((toggle) => {
+        new import_obsidian5.Setting(toggleContainer).addToggle((toggle) => {
           toggle.toggleEl.setAttribute("aria-label", `#${tag.name}`);
           toggle.setValue(tag.enabled).onChange(async (val) => {
             tags[index].enabled = val;
@@ -1192,7 +1540,7 @@ var JevTaggerSettingTab = class extends import_obsidian4.PluginSettingTab {
     }
   }
 };
-var DeleteTagConfirmModal = class extends import_obsidian4.Modal {
+var DeleteTagConfirmModal = class extends import_obsidian5.Modal {
   constructor(app, plugin, tag, onDeleted) {
     super(app);
     this.plugin = plugin;
@@ -1223,7 +1571,7 @@ var DeleteTagConfirmModal = class extends import_obsidian4.Modal {
       confirmBtn.setText(t(lang, "settings.tagLibrary.deleting"));
       try {
         const result = await this.plugin.removeTagFromVault(this.tag.name);
-        new import_obsidian4.Notice(
+        new import_obsidian5.Notice(
           t(lang, "settings.tagLibrary.deleteSuccess", {
             tag: this.tag.name,
             count: result.affectedNotes
@@ -1232,7 +1580,7 @@ var DeleteTagConfirmModal = class extends import_obsidian4.Modal {
         this.onDeleted();
         this.close();
       } catch (err) {
-        new import_obsidian4.Notice(
+        new import_obsidian5.Notice(
           t(lang, "settings.tagLibrary.deleteFailed", {
             error: err?.message || String(err)
           })
@@ -1249,8 +1597,8 @@ var DeleteTagConfirmModal = class extends import_obsidian4.Modal {
 };
 
 // src/tagSuggestModal.ts
-var import_obsidian5 = require("obsidian");
-var TagSuggestModal = class extends import_obsidian5.Modal {
+var import_obsidian6 = require("obsidian");
+var TagSuggestModal = class extends import_obsidian6.Modal {
   constructor(app, plugin, file) {
     super(app);
     this.plugin = plugin;
@@ -1296,7 +1644,6 @@ var TagSuggestModal = class extends import_obsidian5.Modal {
       this.existingTags = new Set((Array.isArray(raw) ? raw.map(String) : typeof raw === "string" ? raw.split(/[\s,]+/) : []).map((tag) => tag.replace(/^#/, "")));
       this.results = await this.plugin.evaluateFile(this.file, session, this.controller.signal, (stage) => {
         if (this.closed) return;
-        progress.stage(stage);
         progress.status.setText(this.tr(`progress.${stage}`));
       });
       if (!this.closed) this.renderResults();
@@ -1371,7 +1718,7 @@ var TagSuggestModal = class extends import_obsidian5.Modal {
         if (await this.plugin.addTagToFile(this.file, tag)) added++;
         this.existingTags.add(tag);
       }
-      if (added) new import_obsidian5.Notice(this.tr("notice.applyAllSuccess", { count: added }));
+      if (added) new import_obsidian6.Notice(this.tr("notice.applyAllSuccess", { count: added }));
     } catch (error) {
       this.error = this.tr("result.writeFailed", { error: this.plugin.errorText(error) });
     } finally {
@@ -1414,10 +1761,12 @@ var LEGACY_DEFAULT_TAG_RULES = [
     otherCriteria: "General software development, database administration, UI styling, or personal notes."
   }
 ];
-var JevTaggerPlugin = class extends import_obsidian6.Plugin {
+var JevTaggerPlugin = class extends import_obsidian7.Plugin {
   constructor() {
     super(...arguments);
     this.batchRunning = false;
+    /** Shared by every session so rotation continues across notes and commands. */
+    this.keyPool = new KeyPool();
     this.controllers = /* @__PURE__ */ new Set();
   }
   tr(key, params) {
@@ -1430,7 +1779,7 @@ var JevTaggerPlugin = class extends import_obsidian6.Plugin {
       if (activeFile) {
         new TagSuggestModal(this.app, this, activeFile).open();
       } else {
-        new import_obsidian6.Notice(this.tr("notice.noActiveFile"));
+        new import_obsidian7.Notice(this.tr("notice.noActiveFile"));
       }
     });
     this.addCommand({
@@ -1484,7 +1833,7 @@ var JevTaggerPlugin = class extends import_obsidian6.Plugin {
     });
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
-        if (file instanceof import_obsidian6.TFile && file.extension === "md") {
+        if (file instanceof import_obsidian7.TFile && file.extension === "md") {
           menu.addItem((item) => {
             item.setTitle(this.tr("menu.suggestTags")).setIcon("tags").onClick(() => {
               new TagSuggestModal(this.app, this, file).open();
@@ -1503,10 +1852,9 @@ var JevTaggerPlugin = class extends import_obsidian6.Plugin {
   syncActiveModel() {
     const provider = this.settings.provider || "typesafe";
     const config = PROVIDERS[provider] || PROVIDERS.typesafe;
-    if (!this.settings.apiKeys) {
-      this.settings.apiKeys = { typesafe: "", openrouter: "" };
+    if (!Array.isArray(this.settings.apiKeys?.[provider])) {
+      this.settings.apiKeys = { ...this.settings.apiKeys, [provider]: [] };
     }
-    const key = this.settings.apiKeys[provider] || "";
     if (!Array.isArray(this.settings.models)) {
       this.settings.models = [];
     }
@@ -1516,17 +1864,20 @@ var JevTaggerPlugin = class extends import_obsidian6.Plugin {
         id: config.id,
         name: config.name,
         endpoint: config.endpoint,
-        model: config.model,
-        apiKey: key
+        model: config.model
       };
       this.settings.models.push(target);
     } else {
       target.name = config.name;
       target.endpoint = config.endpoint;
       target.model = typeof target.model === "string" && target.model.trim() ? target.model : config.model;
-      target.apiKey = key;
     }
     this.settings.activeModelId = provider;
+  }
+  /** Rebuilds the pool only when the configured keys changed, so recorded statuses survive. */
+  syncKeyPool() {
+    const keys = this.settings.apiKeys?.[this.settings.provider] || [];
+    if (!sameKeys(this.keyPool.keys, keys)) this.keyPool = new KeyPool(keys);
   }
   async loadSettings() {
     const savedData = await this.loadData();
@@ -1534,6 +1885,7 @@ var JevTaggerPlugin = class extends import_obsidian6.Plugin {
     const migrated = migrateModels(savedData);
     this.settings = { ...DEFAULT_SETTINGS, ...current, ...migrated, tags: Array.isArray(savedData?.tags) ? savedData.tags : [] };
     this.syncActiveModel();
+    this.syncKeyPool();
     if (Array.isArray(savedData?.tags)) {
       const filteredTags = this.settings.tags.filter(
         (tag) => !LEGACY_DEFAULT_TAG_RULES.some(
@@ -1548,6 +1900,7 @@ var JevTaggerPlugin = class extends import_obsidian6.Plugin {
   }
   async saveSettings() {
     this.syncActiveModel();
+    this.syncKeyPool();
     await this.saveData(this.settings);
   }
   get activeModel() {
@@ -1558,22 +1911,14 @@ var JevTaggerPlugin = class extends import_obsidian6.Plugin {
       if (found.id === "typesafe" || found.id === "openrouter") {
         found.endpoint = PROVIDERS[found.id].endpoint;
         found.model = typeof found.model === "string" && found.model.trim() ? found.model : PROVIDERS[found.id].model;
-        if (this.settings.apiKeys?.[found.id] !== void 0) {
-          found.apiKey = this.settings.apiKeys[found.id];
-        }
       }
       return found;
     }
-    return {
-      id: config.id,
-      name: config.name,
-      endpoint: config.endpoint,
-      model: config.model,
-      apiKey: this.settings.apiKeys?.[provider] || ""
-    };
+    return { id: config.id, name: config.name, endpoint: config.endpoint, model: config.model };
   }
   createEvaluationSession() {
-    const client = new ModelClient(this.activeModel);
+    this.syncKeyPool();
+    const client = new ModelClient(this.activeModel, this.keyPool);
     const tags = this.settings.tags.map((tag) => ({ ...tag }));
     if (!tags.some((tag) => tag.enabled)) throw new Error(this.tr("error.noTags"));
     return { client, tags, threshold: this.settings.confidenceThreshold };
@@ -1635,14 +1980,14 @@ var JevTaggerPlugin = class extends import_obsidian6.Plugin {
    * Auto applies tags that meet the threshold
    */
   async autoApplyTags(file) {
-    new import_obsidian6.Notice(this.tr("notice.analyzing", { name: file.basename }));
+    new import_obsidian7.Notice(this.tr("notice.analyzing", { name: file.basename }));
     const controller = this.createController();
     try {
       const session = this.createEvaluationSession();
       const results = await this.evaluateFile(file, session, controller.signal);
       const eligible = results.filter((r) => isEligible(r, session.threshold));
       if (eligible.length === 0) {
-        new import_obsidian6.Notice(
+        new import_obsidian7.Notice(
           this.tr("notice.noEligibleTags", {
             threshold: Math.round(this.settings.confidenceThreshold * 100)
           })
@@ -1656,12 +2001,12 @@ var JevTaggerPlugin = class extends import_obsidian6.Plugin {
         if (added) addedCount++;
       }
       if (addedCount > 0) {
-        new import_obsidian6.Notice(this.tr("notice.autoApplySuccess", { count: addedCount }));
+        new import_obsidian7.Notice(this.tr("notice.autoApplySuccess", { count: addedCount }));
       } else {
-        new import_obsidian6.Notice(this.tr("notice.tagsAlreadyExist"));
+        new import_obsidian7.Notice(this.tr("notice.tagsAlreadyExist"));
       }
     } catch (e) {
-      new import_obsidian6.Notice(this.tr("notice.autoApplyFailed", { error: this.errorText(e) }));
+      new import_obsidian7.Notice(this.tr("notice.autoApplyFailed", { error: this.errorText(e) }));
     } finally {
       this.releaseController(controller);
     }
@@ -1760,7 +2105,7 @@ var JevTaggerPlugin = class extends import_obsidian6.Plugin {
       const cache = this.app.metadataCache?.getFileCache ? this.app.metadataCache.getFileCache(file) : null;
       let hasTag = false;
       if (cache) {
-        const tags = (0, import_obsidian6.getAllTags)(cache) || [];
+        const tags = (0, import_obsidian7.getAllTags)(cache) || [];
         hasTag = tags.some((t2) => (typeof t2 === "string" ? t2 : t2?.tag || "").replace(/^#/, "").trim() === cleanTag);
       } else {
         hasTag = true;
@@ -1782,11 +2127,11 @@ var JevTaggerPlugin = class extends import_obsidian6.Plugin {
     const allTagsMap = /* @__PURE__ */ Object.create(null);
     for (const file of this.app.vault.getMarkdownFiles()) {
       const cache = this.app.metadataCache.getFileCache(file);
-      for (const tag of cache ? (0, import_obsidian6.getAllTags)(cache) || [] : []) allTagsMap[tag] = (allTagsMap[tag] || 0) + 1;
+      for (const tag of cache ? (0, import_obsidian7.getAllTags)(cache) || [] : []) allTagsMap[tag] = (allTagsMap[tag] || 0) + 1;
     }
     const tagKeys = Object.keys(allTagsMap);
     if (tagKeys.length === 0) {
-      new import_obsidian6.Notice(this.tr("notice.noVaultTags"));
+      new import_obsidian7.Notice(this.tr("notice.noVaultTags"));
       return { added: 0, total: 0 };
     }
     let addedCount = 0;
@@ -1809,7 +2154,7 @@ var JevTaggerPlugin = class extends import_obsidian6.Plugin {
       }
     }
     await this.saveSettings();
-    new import_obsidian6.Notice(this.tr("notice.vaultTagsSynced", { total: sortedTags.length, added: addedCount }));
+    new import_obsidian7.Notice(this.tr("notice.vaultTagsSynced", { total: sortedTags.length, added: addedCount }));
     return { added: addedCount, total: sortedTags.length };
   }
   /**

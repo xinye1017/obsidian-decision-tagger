@@ -4,11 +4,14 @@ import type { TagDefinition } from "./jevClient";
 import { BatchTagModal } from "./batchTagModal";
 import { TagModal } from "./tagModal";
 import { Language, LANGUAGES, LANGUAGE_OPTIONS, TranslationKey, t } from "./i18n";
-import { defaultProfile, ModelClient, ModelProfile, ModelProvider, PROVIDERS } from "./modelClient";
+import { defaultProfile, ModelProfile, ModelProvider, PROVIDERS } from "./modelClient";
+import { maskKey } from "./keyPool";
+import { probeKeys } from "./keyProbe";
 
 export interface JevTaggerSettings {
 	provider: ModelProvider;
-	apiKeys: Record<ModelProvider, string>;
+	/** One key per account, rotated round-robin. */
+	apiKeys: Record<ModelProvider, string[]>;
 	models: ModelProfile[];
 	activeModelId: string;
 	language: Language;
@@ -19,12 +22,12 @@ export interface JevTaggerSettings {
 export const DEFAULT_SETTINGS: JevTaggerSettings = {
 	provider: "typesafe",
 	apiKeys: {
-		typesafe: "",
-		openrouter: "",
+		typesafe: [],
+		openrouter: [],
 	},
 	models: [
-		{ id: "typesafe", name: "TypeSafe", endpoint: PROVIDERS.typesafe.endpoint, model: PROVIDERS.typesafe.model, apiKey: "" },
-		{ id: "openrouter", name: "OpenRouter", endpoint: PROVIDERS.openrouter.endpoint, model: PROVIDERS.openrouter.model, apiKey: "" },
+		{ id: "typesafe", name: "TypeSafe", endpoint: PROVIDERS.typesafe.endpoint, model: PROVIDERS.typesafe.model },
+		{ id: "openrouter", name: "OpenRouter", endpoint: PROVIDERS.openrouter.endpoint, model: PROVIDERS.openrouter.model },
 	],
 	activeModelId: "typesafe",
 	language: "zh",
@@ -40,9 +43,71 @@ export class JevTaggerSettingTab extends PluginSettingTab {
 		this.plugin = plugin;
 	}
 
+	private tr(key: TranslationKey, params?: Record<string, string | number>): string {
+		return t(this.plugin.settings.language, key, params);
+	}
+
+	private poolKeys(): string[] {
+		return this.plugin.settings.apiKeys?.[this.plugin.settings.provider] || [];
+	}
+
+	private async setPoolKeys(keys: string[]) {
+		this.plugin.settings.apiKeys[this.plugin.settings.provider] = keys;
+		await this.plugin.saveSettings();
+	}
+
+	/**
+	 * One row per account: the masked key, the health the pool recorded for it,
+	 * and the latency of its last successful answer. Rows are derived from the
+	 * pool, never stored, so a re-render always shows the live state.
+	 */
+	private renderKeyPool(container: HTMLElement, remove: (index: number) => void) {
+		const keys = this.poolKeys();
+		const pool = this.plugin.keyPool;
+		if (!keys.length) {
+			container.createDiv({ cls: "jev-key-empty", text: this.tr("key.pool.empty") });
+			return;
+		}
+		keys.forEach((key, index) => {
+			const state = pool.state(key);
+			const row = container.createDiv({ cls: `jev-key-row is-${state.status}` });
+			let revealed = false;
+			const secret = row.createSpan({ cls: "jev-key-secret", text: maskKey(key) });
+			row.createSpan({
+				cls: "jev-key-status",
+				text: state.latencyMs
+					? `${this.tr(`key.status.${state.status}`)} · ${state.latencyMs}ms`
+					: this.tr(`key.status.${state.status}`),
+			});
+			new Setting(row)
+				.addExtraButton(button => button
+					.setIcon("eye-off")
+					.setTooltip(this.tr("key.pool.reveal"))
+					.onClick(() => {
+						revealed = !revealed;
+						secret.setText(revealed ? key : maskKey(key));
+						button.setIcon(revealed ? "eye" : "eye-off");
+					}))
+				.addExtraButton(button => button
+					.setIcon("trash-2")
+					.setTooltip(this.tr("key.pool.remove"))
+					.onClick(() => remove(index)));
+		});
+		const summary = pool.summary();
+		container.createDiv({
+			cls: "jev-key-summary",
+			text: this.tr("key.pool.summary", {
+				usable: summary.usable,
+				total: summary.total,
+				percent: Math.round(summary.percent * 100),
+				latency: summary.avgLatencyMs,
+			}),
+		});
+	}
+
 	private renderModels(container: HTMLElement) {
-		const lang = this.plugin.settings.language;
-		const tr = (key: TranslationKey, params?: Record<string, string | number>) => t(lang, key, params);
+		const tr = (key: TranslationKey, params?: Record<string, string | number>) => t(this.plugin.settings.language, key, params);
+		let checking = false;
 		new Setting(container).setHeading().setName(tr("model.heading")).setDesc(tr("model.desc"));
 		const panel = container.createDiv({ cls: "jev-model-panel" });
 		const activeProvider = this.plugin.settings.provider || "typesafe";
@@ -83,58 +148,76 @@ export class JevTaggerSettingTab extends PluginSettingTab {
 					});
 			});
 
-		// 3. API Key
-		let input: HTMLInputElement;
+		// 3. Account pool: one key per account, rotated round-robin
 		new Setting(panel)
-			.setName("API Key")
-			.setDesc(tr("model.keyDesc"))
+			.setName(tr("key.pool.heading"))
+			.setDesc(tr("key.pool.desc"));
+		const list = panel.createDiv({ cls: "jev-key-pool" });
+		const removeKey = async (index: number) => {
+			await this.setPoolKeys(this.poolKeys().filter((_key, position) => position !== index));
+			this.display();
+		};
+		this.renderKeyPool(list, removeKey);
+
+		let draft = "";
+		const addKey = async () => {
+			const secret = draft.trim();
+			if (!secret) return;
+			if (this.poolKeys().includes(secret)) {
+				new Notice(tr("key.pool.duplicate"));
+				return;
+			}
+			draft = "";
+			await this.setPoolKeys([...this.poolKeys(), secret]);
+			this.display();
+		};
+		new Setting(panel)
+			.setDesc(tr("key.pool.addDesc"))
 			.addText(text => {
-				input = text.inputEl;
-				input.type = "password";
-				input.autocomplete = "off";
-				text.setPlaceholder(activeProvider === "openrouter" ? "sk-or-v1-..." : "apikey_...");
-				text.setValue(profile.apiKey).onChange(async value => {
-					const val = value.trim();
-					profile.apiKey = val;
-					if (!this.plugin.settings.apiKeys) {
-						this.plugin.settings.apiKeys = { typesafe: "", openrouter: "" };
-					}
-					this.plugin.settings.apiKeys[this.plugin.settings.provider] = val;
-					const found = this.plugin.settings.models.find(m => m.id === this.plugin.settings.provider);
-					if (found) found.apiKey = val;
-					await this.plugin.saveSettings();
+				text.inputEl.type = "password";
+				text.inputEl.autocomplete = "off";
+				text.setPlaceholder(activeProvider === "openrouter" ? "sk-or-v1-…" : "apikey_…")
+					.onChange(value => { draft = value; });
+				text.inputEl.addEventListener("keydown", event => {
+					if (event.key === "Enter") addKey();
 				});
 			})
-			.addExtraButton(button => button.setIcon("eye-off").setTooltip(tr("settings.apiKey.toggleTooltip")).onClick(() => {
-				input.type = input.type === "password" ? "text" : "password";
-				button.setIcon(input.type === "password" ? "eye-off" : "eye");
-			}));
+			.addButton(button => button.setButtonText(tr("key.pool.add")).onClick(addKey));
 
-		// 4. Test Connection
+		// 4. Check every account in the pool
 		const status = panel.createDiv({ cls: "jev-model-status", attr: { role: "status", "aria-live": "polite" } });
+		const keys = this.poolKeys();
 		new Setting(panel)
-			.setDesc(tr("model.testDesc"))
-			.addButton(button => button.setButtonText(tr("model.test")).setCta().onClick(async () => {
-				button.setDisabled(true);
-				status.setText(tr("model.testing"));
-				const controller = this.plugin.createController();
-				try {
-					const detected = await new ModelClient(profile).detect(controller.signal);
-					if (!profile.model.trim()) {
-						profile.model = detected.model;
-						if (modelInput) modelInput.value = detected.model;
-						const found = this.plugin.settings.models.find(m => m.id === this.plugin.settings.provider);
-						if (found) found.model = detected.model;
-						await this.plugin.saveSettings();
+			.setDesc(tr("key.pool.checkDesc"))
+			.addButton(button => {
+				button.setButtonText(tr("key.pool.check")).setCta();
+				button.setDisabled(checking || !keys.length);
+				button.onClick(async () => {
+					checking = true;
+					button.setDisabled(true);
+					status.setText(tr("key.pool.checking", { count: keys.length }));
+					const controller = this.plugin.createController();
+					let failure: unknown = null;
+					try {
+						const served = await probeKeys(this.plugin.activeModel, this.plugin.keyPool, controller.signal);
+						if (served && !this.plugin.activeModel.model.trim()) {
+							this.plugin.activeModel.model = served;
+							if (modelInput) modelInput.value = served;
+							await this.plugin.saveSettings();
+						}
+					} catch (error) {
+						failure = error;
 					}
-					status.setText(tr("model.testOk", { model: detected.model }));
-				} catch (error) {
-					status.setText(this.plugin.errorText(error));
-				} finally {
-					button.setDisabled(false);
+					checking = false;
 					this.plugin.releaseController(controller);
-				}
-			}));
+					if (failure) {
+						status.setText(this.plugin.errorText(failure));
+						button.setDisabled(false);
+						return;
+					}
+					this.display();
+				});
+			});
 
 		panel.querySelectorAll<HTMLElement>(".setting-item").forEach(row => {
 			const label = row.querySelector(".setting-item-name")?.textContent;

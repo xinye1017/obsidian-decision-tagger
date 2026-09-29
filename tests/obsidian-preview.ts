@@ -15,8 +15,14 @@ proto.addClass = function(name: string) { this.classList.add(name); };
 proto.toggleClass = function(name: string, active: boolean) { this.classList.toggle(name, active); };
 export class App {}
 export class TFile { extension = 'md'; constructor(public path: string, public basename: string) {} }
-export class TFolder { constructor(public path: string) {} }
+export class TFolder {
+ children: any[] = [];
+ constructor(public path: string) {}
+ get name() { return this.path.split('/').pop() || '/'; }
+}
 export class Plugin {}
+const ICONS: Record<string, string> = { folder: '▸', 'folder-open': '▾', 'corner-up-left': '↰', 'chevron-down': '⌄', 'chevron-up': '⌃' };
+export const setIcon = (parent: HTMLElement, icon: string) => { const node = document.createElement('span'); node.className = 'svg-icon'; node.textContent = ICONS[icon] ?? '•'; parent.append(node); };
 export class Notice { constructor(public text: string) { document.querySelector('#notice')!.textContent = text; } }
 export const getAllTags = () => [];
 export const requestUrl = async () => ({ status: 200, json: { choices: [{ message: { content: '{"results":[{"tagName":"test","isMatch":true,"probability":0.99,"reason":"Test"}]}' } }] } });

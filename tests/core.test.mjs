@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { build } from 'esbuild';
 
-const built = await build({ stdin: { contents: `export * from './src/modelClient'; export * from './src/batchTagModal'; export {default as PluginClass} from './src/main';`, resolveDir: process.cwd(), loader: 'ts' }, bundle: true, platform: 'node', format: 'cjs', external: ['obsidian'], write: false });
+const built = await build({ stdin: { contents: `export * from './src/modelClient'; export * from './src/keyPool'; export * from './src/keyProbe'; export * from './src/batchTagModal'; export {default as PluginClass} from './src/main';`, resolveDir: process.cwd(), loader: 'ts' }, bundle: true, platform: 'node', format: 'cjs', external: ['obsidian'], write: false });
 const element = () => ({ text: '', setText(value) { this.text = value; }, empty() {}, title: '', disabled: false });
 function load(request = async () => ({ status: 200, json: {} }), timers = {}) {
  const module = { exports: {} };
@@ -14,15 +14,20 @@ function load(request = async () => ({ status: 200, json: {} }), timers = {}) {
 const tag = (name = 'AI') => ({ name, enabled: true, instructions: 'Classify', matchCriteria: 'AI research', otherCriteria: 'Other topics' });
 const decision = (overrides = {}) => ({ tagName: 'AI', isMatch: true, probability: .9, reason: 'Relevant', ...overrides });
 const answer = (overrides = {}) => ({ answers: { q_AI: { type: 'choice', choice: 'match', confidence: .9, probabilities: { match: .9, other: .1 }, ...overrides } } });
-const profile = { id: 'local', name: 'Local', endpoint: 'http://localhost:1234', model: 'test-model', apiKey: 'test-key' };
+const profile = { id: 'local', name: 'Local', endpoint: 'http://localhost:1234', model: 'test-model' };
+/** A client bound to `keys`, which is where credentials live now. */
+const client = (api, source = profile, keys = ['test-key']) => new api.ModelClient(source, keys instanceof api.KeyPool ? keys : new api.KeyPool(keys));
 
 test('legacy credentials and endpoint migrate without replacing custom profiles', () => {
  const api = load();
  const migrated = api.migrateModels({ apiKey: 'test-key', endpoint: 'https://example.test/custom' });
- assert.equal(migrated.models[0].apiKey, 'test-key'); assert.equal(migrated.models[0].endpoint, 'https://example.test/custom');
+ assert.deepEqual([...migrated.apiKeys.typesafe], ['test-key']); assert.equal(migrated.models[0].endpoint, 'https://example.test/custom');
+ const pooled = api.migrateModels({ apiKeys: { openrouter: ['a', 'b', 'a'] }, provider: 'openrouter' });
+ assert.deepEqual([...pooled.apiKeys.openrouter], ['a', 'b']);
  const custom = api.migrateModels({ models: [{ ...profile, protocol: 'openai' }], activeModelId: 'missing' });
  assert.equal(custom.activeModelId, 'local'); assert.notEqual(custom.models[0], profile);
- assert.deepEqual(Object.keys(custom.models[0]).sort(), ['apiKey', 'endpoint', 'id', 'model', 'name']);
+ assert.deepEqual(Object.keys(custom.models[0]).sort(), ['endpoint', 'id', 'model', 'name']);
+ assert.deepEqual([...api.migrateModels({ models: [{ id: 'openrouter', apiKey: 'legacy-or' }], activeModelId: 'openrouter' }).apiKeys.openrouter], ['legacy-or']);
 });
 test('base URLs resolve to the decisions endpoint while full decision endpoints are kept', () => {
  const { resolveEndpoint, validateProfile } = load();
@@ -54,7 +59,7 @@ test('malformed, incomplete and out-of-range decision answers fail closed', () =
 test('detection reports the served decision model and omits an unset model ID', async () => {
  let request;
  const api = load(async value => { request = value; return { status: 200, json: { model: 'span-01-lite', answers: { q_detect: { type: 'choice', choice: 'other', confidence: .8 } }, usage: { input_tokens: 42 } } }; });
- const detected = await new api.ModelClient({ ...profile, model: '' }).detect();
+ const detected = await client(api, { ...profile, model: '' }).detect();
  assert.equal(detected.model, 'span-01-lite'); assert.equal(detected.inputTokens, 42); assert.ok(detected.probability < .21);
  const payload = JSON.parse(request.body);
  assert.equal('model' in payload, false);
@@ -63,51 +68,61 @@ test('detection reports the served decision model and omits an unset model ID', 
  assert.equal(request.headers.Authorization, 'Bearer test-key');
  assert.equal(api.servedModel({ model: '' }, 'fallback'), 'fallback');
  const failing = load(async () => ({ status: 200, json: { answers: {} } }));
- await assert.rejects(new failing.ModelClient({ ...profile, model: '' }).detect(), e => e.code === 'response');
+ await assert.rejects(client(failing, { ...profile, model: '' }).detect(), e => e.code === 'response');
 });
 test('decision requests use the snapshot model, enabled rules and optional authentication', async () => {
  let request;
  const api = load(async value => { request = value; return { status: 200, json: answer() }; });
- const source = { ...profile }; const client = new api.ModelClient(source); source.model = 'changed';
- await client.evaluateNote({ title: 'Synthetic' }, [tag(), { ...tag('off'), enabled: false }]);
+ const source = { ...profile }; const bound = client(api, source); source.model = 'changed';
+ await bound.evaluateNote({ title: 'Synthetic' }, [tag(), { ...tag('off'), enabled: false }]);
  const payload = JSON.parse(request.body);
  assert.equal(payload.model, 'test-model'); assert.equal(payload.state.title, 'Synthetic');
  assert.equal(payload.questions.q_AI.type, 'choice'); assert.equal(payload.questions.q_AI.instructions, 'Classify');
  assert.deepEqual(payload.questions.q_AI.criteria, { match: 'AI research', other: 'Other topics' });
  assert.equal(payload.questions.q_off, undefined);
  assert.equal(request.url, 'http://localhost:1234/api/alpha/decisions');
- await new api.ModelClient({ ...profile, apiKey: '' }).evaluateNote({}, [tag()]);
+ await client(api, profile, []).evaluateNote({}, [tag()]);
  assert.equal(request.headers.Authorization, undefined);
 });
 test('a custom decision model ID and full endpoint are sent unchanged', async () => {
  let request;
  const api = load(async value => { request = value; return { status: 200, json: { answers: { q_AI: { choice: 'match', confidence: .9 } } } }; });
- await new api.ModelClient({ ...api.defaultProfile(), apiKey: 'test', model: 'jev-custom' }).evaluateNote({ title: 'Test' }, [tag()]);
+ await client(api, { ...api.defaultProfile(), model: 'jev-custom' }, ['test']).evaluateNote({ title: 'Test' }, [tag()]);
  const payload = JSON.parse(request.body); assert.equal(payload.model, 'jev-custom'); assert.equal(payload.questions.q_AI.criteria.match, 'AI research');
  assert.equal(request.headers.Authorization, 'Bearer test'); assert.equal(request.url, 'https://api.typesafe.ai/v1/systemone');
 });
 test('HTTP errors never expose response content or credentials', async () => {
  const api = load(async () => ({ status: 401, text: 'SENSITIVE BODY', json: { error: 'SECRET' } }));
- await assert.rejects(new api.ModelClient(profile).evaluateNote({}, [tag()]), e => e.code === 'http' && e.status === 401 && !e.message.includes('SECRET'));
+ await assert.rejects(client(api).evaluateNote({}, [tag()]), e => e.code === 'http' && e.status === 401 && !e.message.includes('SECRET'));
 });
 test('network failures, synchronous transport errors and timeouts settle safely', async () => {
  const api = load(() => { throw new Error('SENSITIVE URL'); });
- await assert.rejects(new api.ModelClient(profile).evaluateNote({}, [tag()]), e => e.code === 'network');
+ await assert.rejects(client(api).evaluateNote({}, [tag()]), e => e.code === 'network');
  const timed = load(() => new Promise(() => {}), { setTimeout: callback => setTimeout(callback, 5) });
- await assert.rejects(new timed.ModelClient(profile).evaluateNote({}, [tag()]), e => e.code === 'timeout');
+ await assert.rejects(client(timed).evaluateNote({}, [tag()]), e => e.code === 'timeout');
 });
 test('cancel discards a late API response', async () => {
  let finish; const api = load(() => new Promise(resolve => { finish = resolve; }));
- const controller = new AbortController(); const pending = new api.ModelClient(profile).evaluateNote({}, [tag()], controller.signal);
+ const controller = new AbortController(); const pending = client(api).evaluateNote({}, [tag()], controller.signal);
  await Promise.resolve(); controller.abort();
  await assert.rejects(pending, e => e.code === 'cancelled');
  finish({ status: 200, json: answer() });
 });
 test('batch scope includes descendants, excludes sibling prefixes and templates', () => {
- const { inBatchScope } = load();
+ const { inBatchScope, countNotesByFolder, isScannablePath } = load();
  assert.equal(inBatchScope('work/sub/note.md', 'work'), true);
  assert.equal(inBatchScope('work-other/note.md', 'work'), false);
  for (const path of ['.hidden/note.md', 'work/.hidden/n.md', 'work/templates/n.md', '模板/a.md']) assert.equal(inBatchScope(path, ''), false);
+ assert.equal(isScannablePath('work/note.md'), true);
+});
+test('note counts per folder let the scope picker price every level', () => {
+ const { countNotesByFolder } = load();
+ const counts = countNotesByFolder(['a/one.md', 'a/b/two.md', 'a/b/three.md', 'other/four.md', 'a/templates/skip.md', 'a/b/模板/skip.md']);
+ assert.equal(counts.get('a'), 3, 'subfolder notes roll up into their parent');
+ assert.equal(counts.get('a/b'), 2);
+ assert.equal(counts.get('other'), 1);
+ assert.equal(counts.has('a/b/three.md'), false, 'files are not folders');
+ assert.equal(counts.get('a/templates'), undefined, 'template notes are never counted');
 });
 function batch(api, overrides = {}, paths = ['one.md', 'two.md']) {
  const files = paths.map(path => ({ path, basename: path }));
@@ -118,7 +133,8 @@ function batch(api, overrides = {}, paths = ['one.md', 'two.md']) {
  const modal = new api.BatchTagModal({ vault: { getMarkdownFiles: () => files } }, plugin);
  modal.progress = { status: element(), value: 0, stage() {}, update(n, total) { this.value = total ? Math.floor(n / total * 100) : 0; } };
  modal.metrics = [element(), element(), element(), element()];
- for (const key of ['detail', 'modelLabel', 'currentFile', 'log', 'start', 'stop', 'scopeSelect']) modal[key] = element();
+ for (const key of ['detail', 'modelLabel', 'currentFile', 'log', 'start', 'stop']) modal[key] = element();
+ modal.picker = { setDisabled() {} };
  modal.entries = []; modal.addLog = (message, state) => modal.entries.push({ message, state });
  return { modal, plugin };
 }
@@ -152,6 +168,16 @@ test('authentication failure halts remaining batch; empty scope and concurrent b
  const empty = batch(api, { evaluateFile: async () => { calls++; return []; } }, []); await empty.modal.run(); assert.equal(calls, 1);
  const busy = batch(api, { batchRunning: true }); await busy.modal.run(); assert.match(busy.modal.progress.status.text, /Another batch/);
 });
+test('a pool that cannot serve any more stops the batch instead of failing note by note', async () => {
+ const api = load(); let calls = 0;
+ const run = async (error) => { const { modal } = batch(api, { evaluateFile: async () => { calls++; throw error; } }); await modal.run(); return modal; };
+ const exhausted = await run(new api.ModelError('quota'));
+ assert.equal(calls, 1); assert.equal(exhausted.progress.value, 50);
+ const broke = await run(new api.ModelError('http', 402));
+ assert.equal(calls, 2); assert.equal(broke.progress.value, 50);
+ const flaky = await run(new api.ModelError('response'));
+ assert.equal(calls, 4); assert.equal(flaky.progress.value, 100);
+});
 test('unchanged notes and rescans reset metrics', async () => {
  const api = load(); const { modal } = batch(api, { addTagToFile: async () => false }, ['one.md']);
  await modal.run(); assert.equal(modal.unchanged, 1); assert.equal(modal.modified, 0); await modal.run(); assert.equal(modal.processed, 1); assert.equal(modal.unchanged, 1);
@@ -168,6 +194,66 @@ test('note context removes frontmatter and inline tags while preserving headings
  const state = await plugin.buildNoteState({ basename: 'Note', parent: { path: 'folder' } });
  assert.equal(state.headings[0], 'Heading'); assert.ok(!state.content_start.includes('oldtag')); assert.ok(!state.content_start.includes('secret'));
 });
+test('account pool rotates round-robin and skips a key that answers with a non-200', async () => {
+ const used = [];
+ const api = load(async req => { used.push(req.headers.Authorization); return { status: 200, json: answer() }; });
+ const pool = new api.KeyPool(['key-a', 'key-b', 'key-c']);
+ const bound = client(api, profile, pool);
+ for (let round = 0; round < 4; round++) await bound.evaluateNote({}, [tag()]);
+ assert.deepEqual(used, ['Bearer key-a', 'Bearer key-b', 'Bearer key-c', 'Bearer key-a']);
+ assert.equal(pool.summary().healthy, 3);
+});
+test('a failing account is recorded and the request continues on the next key', async () => {
+ const used = [];
+ const codes = { 'Bearer key-a': 429, 'Bearer key-b': 401, 'Bearer key-c': 200 };
+ const api = load(async req => { used.push(req.headers.Authorization); return { status: codes[req.headers.Authorization], json: answer() }; });
+ const pool = new api.KeyPool(['key-a', 'key-b', 'key-c'], { now: () => 1_000 });
+ const bound = client(api, profile, pool);
+ const results = await bound.evaluateNote({}, [tag()]);
+ assert.equal(results[0].probability, .9);
+ assert.deepEqual(used, ['Bearer key-a', 'Bearer key-b', 'Bearer key-c']);
+ assert.equal(pool.state('key-a').status, 'limited');
+ assert.equal(pool.state('key-b').status, 'invalid');
+ assert.equal(pool.state('key-c').status, 'healthy');
+ assert.deepEqual([...pool.available()], ['key-c']);
+ const summary = pool.summary();
+ assert.equal(summary.usable, 1); assert.equal(summary.percent, 1 / 3); assert.equal(summary.limited, 1); assert.equal(summary.dead, 1);
+ assert.equal(summary.unchecked, 0);
+});
+test('rate limited keys return to rotation once the cooldown ends, dead ones never do', async () => {
+ const api = load(); let now = 1_000;
+ const pool = new api.KeyPool(['limited', 'dead'], { cooldownMs: 500, now: () => now });
+ pool.record('limited', 'limited', 0, 429); pool.record('dead', 'banned', 0, 403);
+ assert.deepEqual([...pool.available()], []);
+ now = 1_600;
+ assert.deepEqual([...pool.available()], ['limited']);
+ assert.equal(pool.state('dead').status, 'banned');
+ pool.record('limited', 'healthy', 812);
+ assert.equal(pool.state('limited').latencyMs, 812);
+ assert.equal(pool.summary().avgLatencyMs, 812);
+});
+test('an exhausted pool fails with a quota error instead of sending an unauthenticated request', async () => {
+ let calls = 0;
+ const api = load(async () => { calls++; return { status: 402, json: {} }; });
+ const bound = client(api, profile, ['a', 'b']);
+ // Both accounts run dry on the first request, which reports the last status it saw.
+ await assert.rejects(bound.evaluateNote({}, [tag()]), e => e.code === 'http' && e.status === 402);
+ assert.equal(calls, 2); assert.equal(bound.pool.summary().dead, 2);
+ // Nothing is left to send, so the next request never leaves the plugin.
+ await assert.rejects(bound.evaluateNote({}, [tag()]), e => e.code === 'quota');
+ assert.equal(calls, 2);
+});
+test('probing records one status per key and returns the model that answered', async () => {
+ const codes = { 'Bearer slow': 200, 'Bearer gone': 401 };
+ const api = load(async req => ({ status: codes[req.headers.Authorization] ?? 500, json: { model: 'span-01-lite', answers: { q_detect: { type: 'choice', choice: 'other', confidence: .8 } } } }));
+ const pool = new api.KeyPool(['slow', 'gone', 'boom']);
+ const served = await api.probeKeys(profile, pool);
+ assert.equal(served, 'span-01-lite');
+ assert.equal(pool.state('slow').status, 'healthy');
+ assert.equal(pool.state('gone').status, 'invalid');
+ assert.equal(pool.state('boom').status, 'unknown');
+ assert.equal(pool.summary().usable, 1);
+});
 test('TypeSafe and OpenRouter provider definitions and protocols are configured properly', async () => {
  const api = load();
  assert.equal(api.PROVIDERS.typesafe.endpoint, 'https://api.typesafe.ai/v1/systemone');
@@ -175,13 +261,13 @@ test('TypeSafe and OpenRouter provider definitions and protocols are configured 
  assert.equal(api.PROVIDERS.openrouter.endpoint, 'https://openrouter.ai/api/alpha/decisions');
  assert.equal(api.PROVIDERS.openrouter.model, 'respan/span-01-lite:free');
 
- const orProfile = { id: 'openrouter', name: 'OpenRouter', endpoint: 'https://openrouter.ai/api/alpha/decisions', model: 'respan/span-01-lite:free', apiKey: 'test-key' };
+ const orProfile = { id: 'openrouter', name: 'OpenRouter', endpoint: 'https://openrouter.ai/api/alpha/decisions', model: 'respan/span-01-lite:free' };
  assert.equal(api.isNoulProvider(orProfile), true);
  assert.equal(api.isNoulProvider(api.defaultProfile()), false);
 
  // Test OpenRouter evaluation converts state to string and uses noul questions
  let capturedRequest;
- const orClient = new (load(async (req) => { capturedRequest = req; return { status: 200, json: { model: 'respan/span-01-lite', answers: { q_AI: { type: 'noul', noul: 0.95 } } } }; })).ModelClient(orProfile);
+ const orClient = client(load(async (req) => { capturedRequest = req; return { status: 200, json: { model: 'respan/span-01-lite', answers: { q_AI: { type: 'noul', noul: 0.95 } } } }; }), orProfile);
  const evalResult = await orClient.evaluateNote({ title: 'AI Note', headings: ['Intro'], content_start: 'AI content' }, [tag()]);
  assert.equal(evalResult[0].isMatch, true);
  assert.equal(evalResult[0].probability, 0.95);
@@ -195,7 +281,7 @@ test('TypeSafe and OpenRouter provider definitions and protocols are configured 
 
  // Test OpenRouter detect
  let detectRequest;
- const detectClient = new (load(async (req) => { detectRequest = req; return { status: 200, json: { model: 'respan/span-01-lite-free', answers: { q_detect: { type: 'noul', noul: 0.92 } } } }; })).ModelClient(orProfile);
+ const detectClient = client(load(async (req) => { detectRequest = req; return { status: 200, json: { model: 'respan/span-01-lite-free', answers: { q_detect: { type: 'noul', noul: 0.92 } } } }; }), orProfile);
  const detectResult = await detectClient.detect();
  assert.equal(detectResult.model, 'respan/span-01-lite-free');
  assert.equal(detectResult.probability, 0.92);

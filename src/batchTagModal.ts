@@ -1,12 +1,32 @@
-import { App, Modal, Notice, Setting, TFile, TFolder } from "obsidian";
+import { App, Modal, Notice, TFile } from "obsidian";
 import type JevTaggerPlugin from "./main";
 import { t, TranslationKey } from "./i18n";
 import { isEligible, ModelError, validateProfile } from "./modelClient";
 import { duration, ProgressView } from "./progressView";
+import { ScopePicker } from "./scopePicker";
+
+/** Hidden paths and templates are never scanned, whatever the scope is. */
+export function isScannablePath(path: string): boolean {
+	return !path.startsWith(".") && !path.includes("/.") && !path.includes("\\.") && !/templates|模板/i.test(path);
+}
 
 export function inBatchScope(path: string, folder: string): boolean {
 	if (folder && !path.startsWith(`${folder}/`)) return false;
-	return !path.startsWith(".") && !path.includes("/.") && !path.includes("\\.") && !/templates|模板/i.test(path);
+	return isScannablePath(path);
+}
+
+/** Notes per folder, so the scope picker can show what each choice would scan. */
+export function countNotesByFolder(paths: string[]): Map<string, number> {
+	const counts = new Map<string, number>();
+	for (const path of paths) {
+		if (!isScannablePath(path)) continue;
+		const segments = path.split("/");
+		for (let depth = segments.length - 1; depth > 0; depth--) {
+			const folder = segments.slice(0, depth).join("/");
+			counts.set(folder, (counts.get(folder) ?? 0) + 1);
+		}
+	}
+	return counts;
 }
 
 export class BatchTagModal extends Modal {
@@ -29,10 +49,12 @@ export class BatchTagModal extends Modal {
 	private log: HTMLElement;
 	private start: HTMLButtonElement;
 	private stop: HTMLButtonElement;
-	private scopeSelect: HTMLSelectElement;
+	private picker: ScopePicker;
+	private counts = new Map<string, number>();
 	constructor(app: App, private plugin: JevTaggerPlugin) { super(app); }
 	private tr(key: TranslationKey, params?: Record<string, string | number>) { return t(this.plugin.settings.language, key, params); }
 	private files(): TFile[] { return this.app.vault.getMarkdownFiles().filter(file => inBatchScope(file.path, this.folder)); }
+	private countIn = (path: string): number => (path ? this.counts.get(path) ?? 0 : this.files().length);
 
 	onOpen() {
 		this.closed = false;
@@ -44,13 +66,14 @@ export class BatchTagModal extends Modal {
 		header.createDiv({ cls: "jev-tagger-subtitle", text: this.tr("batch.subtitle", { threshold: Math.round(this.plugin.settings.confidenceThreshold * 100) }) });
 		this.modelLabel = header.createDiv({ cls: "jev-model-label" });
 		this.updateModelLabel();
-		new Setting(this.contentEl).setName(this.tr("batch.scopeLabel")).setDesc(this.tr("batch.scopeDesc")).addDropdown(dropdown => {
-			dropdown.addOption("", this.tr("batch.scopeAll"));
-			this.app.vault.getAllLoadedFiles().filter(file => file instanceof TFolder && file.path !== "/" && file.path.length > 0)
-				.map(file => file.path).sort((a, b) => a.localeCompare(b)).forEach(path => dropdown.addOption(path, path));
-			dropdown.setValue(this.folder).onChange(path => { this.folder = path; this.ready(); });
-			this.scopeSelect = dropdown.selectEl;
-		});
+		this.counts = countNotesByFolder(this.app.vault.getMarkdownFiles().map(file => file.path));
+		this.picker = new ScopePicker(
+			this.app,
+			this.contentEl,
+			() => this.plugin.settings.language,
+			path => { this.folder = path; this.ready(); },
+			path => this.countIn(path),
+		);
 		this.progress = new ProgressView(this.contentEl, this.plugin.settings.language);
 		this.currentFile = this.contentEl.createDiv({ cls: "jev-batch-current-file" });
 		const stats = this.contentEl.createDiv({ cls: "jev-batch-stats" });
@@ -74,10 +97,11 @@ export class BatchTagModal extends Modal {
 		this.modelLabel.setText(`${this.plugin.activeModel.name} · ${this.plugin.activeModel.model} · ${Math.round(this.plugin.settings.confidenceThreshold * 100)}%`);
 	}
 	private ready() {
+		this.counts = countNotesByFolder(this.app.vault.getMarkdownFiles().map(file => file.path));
 		this.total = this.files().length;
 		this.processed = this.modified = this.added = this.failed = this.unchanged = 0;
 		this.startedAt = 0;
-		this.refresh(); this.progress.stage(); this.currentFile.setText("");
+		this.refresh(); this.currentFile.setText("");
 		this.progress.status.setText(this.tr("batch.readyCount", { count: this.total }));
 		this.start.disabled = this.total === 0;
 	}
@@ -113,7 +137,8 @@ export class BatchTagModal extends Modal {
 		this.controller = this.plugin.createController();
 		const signal = this.controller.signal;
 		this.startedAt = Date.now();
-		this.start.disabled = this.scopeSelect.disabled = true;
+		this.start.disabled = true;
+		this.picker.setDisabled(true);
 		this.stop.setText(this.tr("batch.stopButton"));
 		const timer = setInterval(() => this.refresh(), 1000);
 		try {
@@ -125,11 +150,11 @@ export class BatchTagModal extends Modal {
 				try {
 					const results = await this.plugin.evaluateFile(file, session, signal, stage => {
 						if (this.closed) return;
-						this.progress.stage(stage); this.progress.status.setText(this.tr(`progress.${stage}`));
+						this.progress.status.setText(this.tr(`progress.${stage}`));
 					});
 					if (signal.aborted) break;
 					const eligible = results.filter(result => isEligible(result, session.threshold));
-					this.progress.stage("writing"); this.progress.status.setText(this.tr("progress.writing"));
+					this.progress.status.setText(this.tr("progress.writing"));
 					for (const result of eligible) {
 						if (signal.aborted) break;
 						if (await this.plugin.addTagToFile(file, result.tagName)) { this.added++; addedNames.push(result.tagName); }
@@ -142,7 +167,9 @@ export class BatchTagModal extends Modal {
 					if (error instanceof ModelError && error.code === "cancelled") break;
 					this.failed++; finished = true;
 					this.addLog(this.tr("batch.logError", { name: file.basename, error: this.plugin.errorText(error) }), "error");
-					if (error instanceof ModelError && (error.code === "config" || (error.code === "http" && [401, 403, 404, 429].includes(error.status)))) this.controller.abort();
+					// Stop the run when no key can serve the request any more: a dead
+					// endpoint, a dead pool, or an entire pool that is limited or broke.
+					if (error instanceof ModelError && (error.code === "config" || error.code === "quota" || (error.code === "http" && [401, 402, 403, 404, 429].includes(error.status)))) this.controller.abort();
 				} finally {
 					if (addedNames.length) { this.modified++; this.addLog(this.tr("batch.logAddedTags", { name: file.basename, tags: addedNames.map(name => `#${name}`).join(" · ") }), "success"); }
 					if (finished) this.processed++;
@@ -156,11 +183,11 @@ export class BatchTagModal extends Modal {
 			this.running = this.plugin.batchRunning = false;
 			if (!this.closed) {
 				const key = signal.aborted ? "batch.cancelled" : this.failed ? "batch.withErrors" : "batch.allDone";
-				this.progress.stage(signal.aborted || this.failed ? undefined : "done");
 				this.progress.status.setText(this.tr(key, { failed: this.failed }));
 				this.currentFile.setText(this.tr("batch.summary", { processed: this.processed, total: this.total, modified: this.modified, added: this.added }));
 				this.refresh();
-				this.start.disabled = this.stop.disabled = this.scopeSelect.disabled = false;
+				this.start.disabled = this.stop.disabled = false;
+				this.picker.setDisabled(false);
 				this.start.setText(this.tr("batch.rescanButton")); this.stop.setText(this.tr("batch.close"));
 				new Notice(this.tr(key, { failed: this.failed }));
 			}

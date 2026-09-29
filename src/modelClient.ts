@@ -1,9 +1,13 @@
 import { requestUrl } from "obsidian";
 import type { NoteEvaluationResult, TagDefinition } from "./jevClient";
+import { classifyStatus, KeyPool } from "./keyPool";
 
 /**
  * Every profile speaks the decision model protocol (System-1 / Decisions API):
  * POST {model?, state, questions} -> {answers, model, usage}.
+ *
+ * Credentials do not live on the profile: they live in a KeyPool, one key per
+ * account, so a request can rotate to the next account when one is unavailable.
  */
 export interface ModelProfile {
 	id: string;
@@ -12,7 +16,6 @@ export interface ModelProfile {
 	endpoint: string;
 	/** Optional: the model that answered is detected and stored when empty. */
 	model: string;
-	apiKey: string;
 }
 
 export interface ModelDetection {
@@ -71,7 +74,7 @@ export function formatStateAsString(state: unknown): string {
 }
 
 export function defaultProfile(): ModelProfile {
-	return { id: "typesafe", name: "TypeSafe", endpoint: PROVIDERS.typesafe.endpoint, model: PROVIDERS.typesafe.model, apiKey: "" };
+	return { id: "typesafe", name: "TypeSafe", endpoint: PROVIDERS.typesafe.endpoint, model: PROVIDERS.typesafe.model };
 }
 
 function readProfile(value: any, fallback: ModelProfile): ModelProfile {
@@ -80,8 +83,16 @@ function readProfile(value: any, fallback: ModelProfile): ModelProfile {
 		name: typeof value?.name === "string" && value.name ? value.name : fallback.name,
 		endpoint: typeof value?.endpoint === "string" ? value.endpoint : fallback.endpoint,
 		model: typeof value?.model === "string" ? value.model : fallback.model,
-		apiKey: typeof value?.apiKey === "string" ? value.apiKey : fallback.apiKey,
 	};
+}
+
+/** Keys are stored as a list; a single saved string becomes a one key pool. */
+function readKeyList(value: unknown, legacy: unknown = ""): string[] {
+	const saved = Array.isArray(value) ? value : typeof value === "string" ? [value] : [];
+	const keys = [...saved, ...(typeof legacy === "string" ? [legacy] : [])]
+		.filter((key): key is string => typeof key === "string" && !!key.trim())
+		.map(key => key.trim());
+	return [...new Set(keys)];
 }
 
 /** Legacy profiles may still carry the removed `protocol` field; it is dropped here. */
@@ -89,7 +100,7 @@ export function migrateModels(saved: any): {
 	models: ModelProfile[];
 	activeModelId: string;
 	provider?: ModelProvider;
-	apiKeys?: Record<ModelProvider, string>;
+	apiKeys?: Record<ModelProvider, string[]>;
 } {
 	const defaultTs = defaultProfile();
 	const defaultOr: ModelProfile = {
@@ -97,28 +108,27 @@ export function migrateModels(saved: any): {
 		name: "OpenRouter",
 		endpoint: PROVIDERS.openrouter.endpoint,
 		model: PROVIDERS.openrouter.model,
-		apiKey: "",
 	};
 
 	let provider: ModelProvider = saved?.provider === "openrouter" || saved?.activeModelId === "openrouter" ? "openrouter" : "typesafe";
-	const apiKeys: Record<ModelProvider, string> = {
-		typesafe: saved?.apiKeys?.typesafe || (provider === "typesafe" ? (saved?.apiKey || "") : ""),
-		openrouter: saved?.apiKeys?.openrouter || (provider === "openrouter" ? (saved?.apiKey || "") : ""),
+	const apiKeys: Record<ModelProvider, string[]> = {
+		typesafe: readKeyList(saved?.apiKeys?.typesafe, provider === "typesafe" ? saved?.apiKey : ""),
+		openrouter: readKeyList(saved?.apiKeys?.openrouter, provider === "openrouter" ? saved?.apiKey : ""),
 	};
 
 	let models: ModelProfile[];
 	if (Array.isArray(saved?.models) && saved.models.length) {
+		// Older profiles carried their own key; harvest it into the pool before it is dropped.
+		const legacyKeys = (id: string) => readKeyList(saved.models.find((m: any) => m?.id === id)?.apiKey);
 		models = saved.models.map((p: any) => readProfile(p, defaultTs));
-		const tsModel = models.find(m => m.id === "typesafe" || m.id === "jev");
-		if (tsModel?.apiKey && !apiKeys.typesafe) apiKeys.typesafe = tsModel.apiKey;
-		const orModel = models.find(m => m.id === "openrouter");
-		if (orModel?.apiKey && !apiKeys.openrouter) apiKeys.openrouter = orModel.apiKey;
+		if (!apiKeys.typesafe.length) apiKeys.typesafe = legacyKeys("typesafe");
+		if (!apiKeys.openrouter.length) apiKeys.openrouter = legacyKeys("openrouter");
 	} else {
-		const ts = readProfile({ ...defaultTs, apiKey: saved?.apiKey || apiKeys.typesafe, endpoint: saved?.endpoint }, defaultTs);
+		const ts = readProfile({ ...defaultTs, endpoint: saved?.endpoint }, defaultTs);
 		if (saved?.endpoint) {
 			models = [ts];
 		} else {
-			const or = readProfile({ ...defaultOr, apiKey: apiKeys.openrouter }, defaultOr);
+			const or = readProfile({ ...defaultOr }, defaultOr);
 			models = [ts, or];
 		}
 	}
@@ -131,7 +141,7 @@ export function migrateModels(saved: any): {
 }
 
 export class ModelError extends Error {
-	constructor(public code: "config" | "network" | "timeout" | "response" | "http" | "cancelled", public status = 0) {
+	constructor(public code: "config" | "network" | "timeout" | "response" | "http" | "cancelled" | "quota", public status = 0) {
 		super(code);
 	}
 }
@@ -203,7 +213,12 @@ const DETECTION_STATE = { title: "Connection test", content_start: "This note de
 
 export class ModelClient {
 	readonly profile: ModelProfile;
-	constructor(profile: ModelProfile) { this.profile = { ...profile }; }
+	readonly pool: KeyPool;
+	/** An empty pool sends unauthenticated requests, which keyless local services accept. */
+	constructor(profile: ModelProfile, pool: KeyPool = new KeyPool()) {
+		this.profile = { ...profile };
+		this.pool = pool;
+	}
 
 	private modelField(): Record<string, string> {
 		const model = this.profile.model.trim();
@@ -211,10 +226,8 @@ export class ModelClient {
 	}
 
 	// requestUrl cannot abort its transport. Cancellation/timeout discard late responses.
-	private async post(body: Record<string, unknown>, signal?: AbortSignal): Promise<any> {
-		validateProfile(this.profile);
-		if (signal?.aborted) throw new ModelError("cancelled");
-		const data = await new Promise<any>((resolve, reject) => {
+	private sendOnce(body: Record<string, unknown>, key: string | null, signal?: AbortSignal): Promise<any> {
+		return new Promise<any>((resolve, reject) => {
 			let settled = false;
 			const timer = setTimeout(() => finish(new ModelError("timeout")), 60_000);
 			const abort = () => finish(new ModelError("cancelled"));
@@ -230,7 +243,7 @@ export class ModelClient {
 				if (signal?.aborted) throw new ModelError("cancelled");
 				return requestUrl({
 				url: resolveEndpoint(this.profile), method: "POST", throw: false,
-				headers: { "Content-Type": "application/json", ...(this.profile.apiKey ? { Authorization: `Bearer ${this.profile.apiKey}` } : {}) },
+				headers: { "Content-Type": "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}) },
 				body: JSON.stringify(body),
 				});
 			}).then(response => {
@@ -239,8 +252,38 @@ export class ModelClient {
 				try { finish(undefined, response.json); } catch { finish(new ModelError("response")); }
 			}, error => finish(error instanceof ModelError ? error : new ModelError("network")));
 		});
+	}
+
+	/**
+	 * Sends the body with the next key in rotation. A non-200 is recorded against
+	 * the key that served it and the request moves on to the next account, so one
+	 * rate limited, exhausted or dead account cannot block the pool.
+	 */
+	private async post(body: Record<string, unknown>, signal?: AbortSignal): Promise<any> {
+		validateProfile(this.profile);
 		if (signal?.aborted) throw new ModelError("cancelled");
-		return data;
+		const anonymous = this.pool.size === 0;
+		const attempts = anonymous ? 1 : this.pool.size;
+		let lastError: ModelError | null = null;
+		for (let attempt = 0; attempt < attempts; attempt++) {
+			const key = anonymous ? null : this.pool.take() ?? null;
+			if (!anonymous && !key) break;
+			const started = Date.now();
+			try {
+				const data = await this.sendOnce(body, key, signal);
+				if (key) this.pool.record(key, "healthy", Date.now() - started, 200);
+				if (signal?.aborted) throw new ModelError("cancelled");
+				return data;
+			} catch (error) {
+				const failure = error instanceof ModelError ? error : new ModelError("network");
+				// Transport level failures are not the key's fault, so they are not rotated.
+				if (failure.code !== "http") throw failure;
+				if (key) this.pool.record(key, classifyStatus(failure.status), Date.now() - started, failure.status);
+				lastError = failure;
+			}
+		}
+		if (signal?.aborted) throw new ModelError("cancelled");
+		throw lastError ?? new ModelError("quota");
 	}
 
 	/** Sends one question per enabled tag and returns the parsed decisions. */

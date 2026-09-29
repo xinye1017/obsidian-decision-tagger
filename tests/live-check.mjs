@@ -130,7 +130,7 @@ const NOTES = [
 
 const bundle = await build({
 	stdin: {
-		contents: `export * from './src/modelClient'; export { default as PluginClass } from './src/main';`,
+		contents: `export * from './src/modelClient'; export * from './src/keyPool'; export * from './src/keyProbe'; export { default as PluginClass } from './src/main';`,
 		resolveDir: root,
 		loader: 'ts',
 	},
@@ -240,7 +240,8 @@ function printTable(results) {
 }
 
 async function run() {
-	const profile = { id: 'live', name: 'Live endpoint', endpoint: ENDPOINT, model: MODEL, apiKey: API_KEY };
+	const profile = { id: 'live', name: 'Live endpoint', endpoint: ENDPOINT, model: MODEL };
+	const pool = () => new api.KeyPool(API_KEY ? [API_KEY] : []);
 
 	console.log(`1. Configuration${USE_MOCK ? ' (built-in mock decision service)' : ''}`);
 	console.log(`   base URL:  ${ENDPOINT}\n   model:     ${MODEL || '<auto-detect>'}\n   api key:   ${mask(API_KEY)}\n   threshold: ${THRESHOLD}`);
@@ -253,6 +254,8 @@ async function run() {
 	const plugin = new api.PluginClass();
 	plugin.app = { vault: { read: async (file) => file.content } };
 	plugin.settings = {
+		provider: 'typesafe',
+		apiKeys: { typesafe: API_KEY ? [API_KEY] : [], openrouter: [] },
 		models: [{ ...profile }],
 		activeModelId: 'live',
 		language: 'zh',
@@ -262,7 +265,7 @@ async function run() {
 	assert.equal(plugin.activeModel.id, 'live');
 
 	console.log('\n2. Detection (base URL + API key only)');
-	const detected = await new api.ModelClient({ ...profile, model: '' }).detect();
+	const detected = await new api.ModelClient({ ...profile, model: '' }, pool()).detect();
 	const detectPayload = JSON.parse(calls.at(-1).body);
 	assert.equal('model' in detectPayload, false, 'detection must not require a model ID');
 	assert.equal(detectPayload.questions.q_detect.type, 'choice');
@@ -341,12 +344,35 @@ async function run() {
 	console.log('\n6. Failures surface as ModelError without leaking the key');
 	const failing = load(async () => ({ status: 401, text: '{"error":{"message":"invalid key"}}', json: { error: { message: 'invalid key' } } }));
 	await assert.rejects(
-		new failing.ModelClient({ ...profile, apiKey: 'sk-invalid' }).detect(),
+		new failing.ModelClient({ ...profile }, new failing.KeyPool(['sk-invalid'])).detect(),
 		(error) => error.code === 'http' && error.status === 401 && !error.message.includes('sk-invalid'),
 	);
 	const malformed = load(async () => ({ status: 200, json: { answers: {} } }));
 	await assert.rejects(new malformed.ModelClient(profile).detect(), (error) => error.code === 'response');
 	ok('401 -> ModelError(http, 401), empty answers -> ModelError(response), both redacted');
+
+	console.log('\n7. Account pool rotates across keys and skips a failing one');
+	const rotating = new api.KeyPool(API_KEY ? [API_KEY, `${API_KEY}-second`] : []);
+	const rotationClient = new api.ModelClient({ ...profile, model: MODEL }, rotating);
+	const before = calls.length;
+	await rotationClient.evaluateNote({ title: 'Rotation A' }, enabledOf(TAGS));
+	const firstKey = calls.at(-1);
+	await rotationClient.evaluateNote({ title: 'Rotation B' }, enabledOf(TAGS));
+	const secondKey = calls.at(-1);
+	assert.equal(calls.length, before + 2, 'one request per evaluation, no retry on success');
+	if (API_KEY) {
+		assert.equal(rotating.summary().healthy, 2, 'both keys answered');
+		assert.notEqual(firstKey.headers.Authorization, secondKey.headers.Authorization, 'consecutive requests must use different keys');
+		ok(`round-robin served ${mask(firstKey.headers.Authorization.slice(7))} then ${mask(secondKey.headers.Authorization.slice(7))}`);
+	} else ok('keyless service: rotation has no credentials to rotate');
+
+	if (!USE_MOCK && API_KEY) {
+		const failover = new api.KeyPool(['sk-definitely-not-valid', API_KEY]);
+		await new api.ModelClient({ ...profile, model: MODEL }, failover).evaluateNote({ title: 'Failover' }, enabledOf(TAGS));
+		assert.equal(failover.state('sk-definitely-not-valid').status, 'invalid', 'the dead key is recorded and dropped from rotation');
+		assert.equal(failover.state(API_KEY).status, 'healthy', 'the live key served the request after the dead one was skipped');
+		ok(`failover left ${failover.summary().usable}/${failover.summary().total} keys usable (${Math.round(failover.summary().percent * 100)}%)`);
+	} else ok('failover check needs a real endpoint and key, skipped');
 
 	const responses = calls.filter((call) => call.status === 200);
 	console.log(`\nSummary${USE_MOCK ? ' (mock)' : ''}`);

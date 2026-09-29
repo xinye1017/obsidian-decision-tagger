@@ -47,7 +47,7 @@ export class TagSuggestModal extends Modal {
 			this.existingTags = new Set((Array.isArray(raw) ? raw.map(String) : typeof raw === "string" ? raw.split(/[\s,]+/) : []).map(tag => tag.replace(/^#/, "")));
 			this.results = await this.plugin.evaluateFile(this.file, session, this.controller.signal, stage => {
 				if (this.closed) return;
-				progress.stage(stage); progress.status.setText(this.tr(`progress.${stage}`));
+				progress.status.setText(this.tr(`progress.${stage}`));
 			});
 			if (!this.closed) this.renderResults();
 		} catch (error) {

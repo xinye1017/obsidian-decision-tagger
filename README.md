@@ -8,10 +8,12 @@ decision tagger classifies notes against your tag rules. Review suggestions, app
 
 ## Features
 
-- **Visible classification stages:** Follow reading, evaluation and writing, actual completion percentage, current file, elapsed time, estimated remaining time, updated notes, added tags and failures. The most recent 100 entries distinguish added tags, unchanged notes and failures.
+- **Visible classification stages:** A single live status line reports reading, evaluation and writing, next to the actual completion percentage, current file, elapsed time, estimated remaining time, scanned notes, added tags and failures. The most recent 100 entries distinguish added tags, unchanged notes and failures.
+- **Compact batch panel:** The scan scope collapses to one line that shows the current scope (the vault name by default) and its note count; open it to browse folders level by level.
 - **Provider Support:** Native support for **TypeSafe** (model `jev-latest`) and **OpenRouter** (model `respan/span-01-lite:free`). Base URLs and models are built-in and fixed, so you only need to enter your API key.
+- **Multi-account key rotation:** One key per account, rotated in order during batch runs. Any non-200 response marks that key on the spot and the request continues on the next account. 401/402/403 accounts drop out of rotation, while a 429 only pauses for its cooldown and returns to the pool afterwards.
 - **Review suggestions:** Recommended tags and other decisions are separated, with match scores, a threshold marker and explanations. Add individually or apply all recommended tags.
-- **Batch classification:** Defaults to the entire vault, or recursively includes Markdown files in a selected folder. Hidden and template paths are excluded. Stop or close the panel to prevent subsequent writes; completed writes remain and progress is not forced to 100%.
+- **Batch classification:** Defaults to the entire vault, or recursively includes Markdown files in a selected folder. The scan scope is picked one level at a time: the list only shows the current level, the breadcrumb walks back up, and every row shows how many notes that choice would scan. Hidden and template paths are excluded. Stop or close the panel to prevent subsequent writes; completed writes remain and progress is not forced to 100%.
 - **Compact tag library:** Import existing vault tags, enable or disable rules individually or in bulk. No built-in default rules. Two columns on desktop, one on narrow screens.
 - **Preserved note data:** Tags are appended through Obsidian `processFrontMatter`, retaining other fields and existing tags without duplicates.
 - **Native themes and language:** Follows Obsidian light/dark themes, with English and Simplified Chinese, keyboard focus and reduced-motion support.
@@ -22,8 +24,8 @@ In **Settings → decision tagger → Model Provider**:
 
 1. **Select Provider**: Choose either `TypeSafe` or `OpenRouter`.
 2. **Fixed Base URL & Model**: The base URL and model are preconfigured and fixed (TypeSafe: `https://api.typesafe.ai/v1/systemone` with model `jev-latest`; OpenRouter: `https://openrouter.ai/api/alpha/decisions` with model `respan/span-01-lite:free`), requiring no manual configuration.
-3. **API Key**: Enter the API key for your chosen provider. Keys are saved independently for each provider.
-4. **Test Connection**: Click **Test Connection** to verify your key and service availability.
+3. **Account Pool**: Add the API key of each account for the selected provider, one account per key. Every row shows the recorded health and latency of that account: 🟢 Healthy (200), 🟡 Rate limited (429, reserved), 🔴 Invalid credentials (401), ⛔ Inference banned (403), 🟣 Quota exhausted (402), ⚪ Unchecked. Keys are masked by default, can be revealed one at a time, and can be removed individually.
+4. **Check All Accounts**: Sends the built-in test request to each account in turn, records availability and latency, and reports the pool as `usable N/M · percent · average latency`. The check never reads note content.
 
 ## Processing and data
 
@@ -32,9 +34,9 @@ In **Settings → decision tagger → Model Provider**:
 3. The service returns one `choice` answer per enabled tag. A missing, unknown or malformed answer fails the evaluation without automatic writes. Answers that omit `probabilities` fall back to `choice` and `confidence`.
 4. Automatic application requires a matching decision and a score at or above the threshold. Other decisions remain available for manual application.
 
-Each batch snapshots its model, rules and threshold at the start. Requests time out after 60 seconds. Authentication errors, missing endpoints and rate limits stop the remaining batch; other per-note failures are logged and processing continues. Cancellation discards late responses; Obsidian's request API cannot withdraw requests already sent to the server. A frontmatter write already in progress finishes before further writes stop.
+Each batch snapshots its model, rules and threshold at the start. Requests time out after 60 seconds. Network errors, timeouts and cancellation do not rotate to another account (only non-200 responses do). Authentication errors, missing endpoints and rate limits stop the remaining batch; other per-note failures are logged and processing continues. Cancellation discards late responses; Obsidian's request API cannot withdraw requests already sent to the server. A frontmatter write already in progress finishes before further writes stop.
 
-API keys are stored in plugin settings. Password masking is not encryption. Remote services receive the note context described above. Connection tests also use the selected provider's API quota.
+API keys are stored in plugin settings. Masking is not encryption. Remote services receive the note context described above. Checking all accounts also spends each account's API quota. Account health and latency live in memory only, so reload the plugin to start from a clean slate.
 
 ## Installation and development
 

@@ -1,6 +1,7 @@
 import { getAllTags, Notice, Plugin, TFile } from "obsidian";
 import { NoteEvaluationResult, TagDefinition } from "./jevClient";
 import { ModelClient, ModelError, migrateModels, isEligible, ModelProfile, ModelProvider, PROVIDERS } from "./modelClient";
+import { KeyPool, sameKeys } from "./keyPool";
 import { DEFAULT_SETTINGS, JevTaggerSettings, JevTaggerSettingTab } from "./settings";
 import { TagSuggestModal } from "./tagSuggestModal";
 import { BatchTagModal } from "./batchTagModal";
@@ -37,6 +38,8 @@ const LEGACY_DEFAULT_TAG_RULES = [
 export default class JevTaggerPlugin extends Plugin {
 	settings: JevTaggerSettings;
 	batchRunning = false;
+	/** Shared by every session so rotation continues across notes and commands. */
+	keyPool = new KeyPool();
 	private controllers = new Set<AbortController>();
 
 	private tr(key: TranslationKey, params?: Record<string, string | number>): string {
@@ -144,10 +147,9 @@ export default class JevTaggerPlugin extends Plugin {
 	syncActiveModel() {
 		const provider = this.settings.provider || "typesafe";
 		const config = PROVIDERS[provider] || PROVIDERS.typesafe;
-		if (!this.settings.apiKeys) {
-			this.settings.apiKeys = { typesafe: "", openrouter: "" };
+		if (!Array.isArray(this.settings.apiKeys?.[provider])) {
+			this.settings.apiKeys = { ...this.settings.apiKeys, [provider]: [] };
 		}
-		const key = this.settings.apiKeys[provider] || "";
 		if (!Array.isArray(this.settings.models)) {
 			this.settings.models = [];
 		}
@@ -158,16 +160,20 @@ export default class JevTaggerPlugin extends Plugin {
 				name: config.name,
 				endpoint: config.endpoint,
 				model: config.model,
-				apiKey: key,
 			};
 			this.settings.models.push(target);
 		} else {
 			target.name = config.name;
 			target.endpoint = config.endpoint;
 			target.model = (typeof target.model === "string" && target.model.trim()) ? target.model : config.model;
-			target.apiKey = key;
 		}
 		this.settings.activeModelId = provider;
+	}
+
+	/** Rebuilds the pool only when the configured keys changed, so recorded statuses survive. */
+	syncKeyPool() {
+		const keys = this.settings.apiKeys?.[this.settings.provider] || [];
+		if (!sameKeys(this.keyPool.keys, keys)) this.keyPool = new KeyPool(keys);
 	}
 
 	async loadSettings() {
@@ -176,6 +182,7 @@ export default class JevTaggerPlugin extends Plugin {
 		const migrated = migrateModels(savedData);
 		this.settings = { ...DEFAULT_SETTINGS, ...current, ...migrated, tags: Array.isArray(savedData?.tags) ? savedData.tags : [] };
 		this.syncActiveModel();
+		this.syncKeyPool();
 
 		// Remove unchanged built-in rules from older versions while preserving custom rules.
 		if (Array.isArray(savedData?.tags)) {
@@ -198,6 +205,7 @@ export default class JevTaggerPlugin extends Plugin {
 
 	async saveSettings() {
 		this.syncActiveModel();
+		this.syncKeyPool();
 		await this.saveData(this.settings);
 	}
 
@@ -209,23 +217,15 @@ export default class JevTaggerPlugin extends Plugin {
 			if (found.id === "typesafe" || found.id === "openrouter") {
 				found.endpoint = PROVIDERS[found.id as ModelProvider].endpoint;
 				found.model = (typeof found.model === "string" && found.model.trim()) ? found.model : PROVIDERS[found.id as ModelProvider].model;
-				if (this.settings.apiKeys?.[found.id as ModelProvider] !== undefined) {
-					found.apiKey = this.settings.apiKeys[found.id as ModelProvider];
-				}
 			}
 			return found;
 		}
-		return {
-			id: config.id,
-			name: config.name,
-			endpoint: config.endpoint,
-			model: config.model,
-			apiKey: this.settings.apiKeys?.[provider] || "",
-		};
+		return { id: config.id, name: config.name, endpoint: config.endpoint, model: config.model };
 	}
 
 	createEvaluationSession() {
-		const client = new ModelClient(this.activeModel);
+		this.syncKeyPool();
+		const client = new ModelClient(this.activeModel, this.keyPool);
 		const tags = this.settings.tags.map(tag => ({ ...tag }));
 		if (!tags.some(tag => tag.enabled)) throw new Error(this.tr("error.noTags"));
 		return { client, tags, threshold: this.settings.confidenceThreshold };
