@@ -1,6 +1,6 @@
 # Decision Tagger
 
-An intelligent Obsidian tagging plugin powered by System-1 decision models (TypeSafe & OpenRouter) with multi-key parallel classification acceleration.
+An intelligent Obsidian tagging plugin powered by System-1 decision models (e.g. Jev) with multi-key parallel classification acceleration.
 
 [简体中文](README_zh.md) · [Releases](https://github.com/xinye1017/obsidian-decision-tagger/releases)
 
@@ -10,46 +10,46 @@ An intelligent Obsidian tagging plugin powered by System-1 decision models (Type
 
 ---
 
-## ✨ Key Features
+## Key Features
 
-- **⚡ Multi-Key Parallel Classification Acceleration**
+- **Multi-Key Parallel Classification Acceleration**
   - Configure multiple API keys for your provider; the batch runner automatically spins up concurrent workers (up to 8 parallel streams) to dramatically cut down scan time.
   - **In-flight request load balancing**: New tasks are dynamically dispatched to the key with the fewest active in-flight requests, avoiding single-key saturation and rate limits.
   - **Automatic error failover & cooldown**: Keys encountering rate limits (`429`) enter a temporary cooldown and resume automatically; dead keys (`401`/`402`/`403`) are safely dropped from active rotation.
 
-- **🗂️ Clean Floating Breadcrumb Scope Picker**
+- **Clean Floating Breadcrumb Scope Picker**
   - Choose between processing the entire vault or targeting specific subdirectories.
   - Drill down level-by-level with a floating breadcrumb navigation bar without layout shift.
   - Automatically calculates note counts per directory and skips template/hidden files.
 
-- **📊 Real-time Batch Progress & Observability**
+- **Real-time Batch Progress & Observability**
   - Displays real-time progress bar, percentage, elapsed time, and ETA.
   - When running in parallel, inspects currently active notes in flight and displays concurrency level in the header.
   - Keeps a scrolling log of the 100 most recent actions (added tags, unchanged notes, and failures).
   - Clean cancel/stop: Aborts instantly without corrupting notes or leaving partial tags.
 
-- **🎯 Interactive Single Note Suggestions**
+- **Interactive Single Note Suggestions**
   - Trigger tag suggestions on the active note or via right-click file context menu.
   - Categorizes tags into recommended (exceeding confidence threshold) and other decisions.
   - Add tags individually or apply all recommended tags with one click.
 
-- **🏷️ Customizable Tag Rule Library & Vault Sync**
+- **Customizable Tag Rule Library & Vault Sync**
   - Import existing vault tags into your rule library with one click.
   - Customize questions, match criteria, and exclusions per tag.
   - **Vault-wide renaming & deletion**: Renaming or deleting a tag in settings can automatically update or clean up frontmatter across all notes in your vault.
 
-- **🛡️ Non-Destructive Frontmatter Updates**
+- **Non-Destructive Frontmatter Updates**
   - Uses Obsidian's native `processFrontMatter` API to append tags.
   - Preserves existing YAML fields, body content, and formatting without duplicate tags.
 
-- **🎨 Polished UX & In-Place Refresh**
+- **Polished UX & In-Place Refresh**
   - Retains scroll position in settings when switching providers, toggling rules, or updating keys.
   - Flexible API key input: comma-separated, newline-separated, or via a dedicated batch manager with one-click clipboard paste.
   - Full dark/light mode integration and native bilingual support (English & Simplified Chinese).
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
 ### 1. Installation
 
@@ -69,7 +69,7 @@ npm run build
 
 ---
 
-## ⚙️ Configuration
+## Configuration
 
 Open **Settings → Decision Tagger**:
 
@@ -87,7 +87,7 @@ Open **Settings → Decision Tagger**:
 
 ---
 
-## 💡 How It Works
+## How It Works
 
 1. **Context Extraction**: For each note, extracts the title, top 8 headings, the first 450 characters of the body, and the last 260 characters for long notes (short notes include folder context). Frontmatter and existing inline tags are stripped to avoid biasing the model.
 2. **System-1 Decision Architecture**: Sends the structured note context and enabled rules to the decision endpoint as clean data (not prompt injections).
@@ -97,7 +97,7 @@ Open **Settings → Decision Tagger**:
 
 ---
 
-## 🛠️ Development & Testing
+## Development & Testing
 
 ```sh
 npm install          # Install dependencies
@@ -110,6 +110,6 @@ npm run live         # Integration test against a live endpoint (optional)
 
 ---
 
-## 📄 License
+## License
 
 MIT License © 2026 [xinyeli](https://github.com/xinye1017)
