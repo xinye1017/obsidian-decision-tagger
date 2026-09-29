@@ -17,11 +17,6 @@ An intelligent Obsidian tagging plugin powered by System-1 decision models (e.g.
   - **In-flight request load balancing**: New tasks are dynamically dispatched to the key with the fewest active in-flight requests, avoiding single-key saturation and rate limits.
   - **Automatic error failover & cooldown**: Keys encountering rate limits (`429`) enter a temporary cooldown and resume automatically; dead keys (`401`/`402`/`403`) are safely dropped from active rotation.
 
-- **Clean Floating Breadcrumb Scope Picker**
-  - Choose between processing the entire vault or targeting specific subdirectories.
-  - Drill down level-by-level with a floating breadcrumb navigation bar without layout shift.
-  - Automatically calculates note counts per directory and skips template/hidden files.
-
 - **Real-time Batch Progress & Observability**
   - Displays real-time progress bar, percentage, elapsed time, and ETA.
   - When running in parallel, inspects currently active notes in flight and displays concurrency level in the header.
