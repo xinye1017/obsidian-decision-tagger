@@ -4,7 +4,7 @@ import type { TagDefinition } from "./jevClient";
 import { BatchTagModal } from "./batchTagModal";
 import { TagModal } from "./tagModal";
 import { Language, LANGUAGES, LANGUAGE_OPTIONS, TranslationKey, t } from "./i18n";
-import { defaultProfile, ModelProfile, ModelProvider, PROVIDERS } from "./modelClient";
+import { ModelProfile, ModelProvider, PROVIDERS } from "./modelClient";
 import { parseApiKeys } from "./keyPool";
 
 export interface JevTaggerSettings {
@@ -141,20 +141,22 @@ export class JevTaggerSettingTab extends PluginSettingTab {
 						updateBatchCount(parsed.length);
 					});
 
-				keyInput.addEventListener("paste", async (e: ClipboardEvent) => {
+				keyInput.addEventListener("paste", (e: ClipboardEvent) => {
 					const textData = e.clipboardData?.getData("text");
 					if (textData && (textData.includes("\n") || textData.includes("\r") || textData.includes("，") || textData.includes(","))) {
 						e.preventDefault();
 						const incoming = parseApiKeys(textData);
 						if (incoming.length) {
-							const current = parseApiKeys(keyInput.value);
-							const merged = Array.from(new Set([...current, ...incoming]));
-							keyInput.value = merged.join(", ");
-							if (batchTextarea) batchTextarea.value = merged.join("\n");
-							await this.setPoolKeys(merged);
-							updateCountHint(merged.length);
-							updateBatchCount(merged.length);
-							new Notice(tr("model.keyClipboardImported", { count: incoming.length, total: merged.length }));
+							void (async () => {
+								const current = parseApiKeys(keyInput.value);
+								const merged = Array.from(new Set([...current, ...incoming]));
+								keyInput.value = merged.join(", ");
+								if (batchTextarea) batchTextarea.value = merged.join("\n");
+								await this.setPoolKeys(merged);
+								updateCountHint(merged.length);
+								updateBatchCount(merged.length);
+								new Notice(tr("model.keyClipboardImported", { count: incoming.length, total: merged.length }));
+							})();
 						}
 					}
 				});
@@ -176,21 +178,20 @@ export class JevTaggerSettingTab extends PluginSettingTab {
 					.onClick(() => {
 						isBatchOpen = !isBatchOpen;
 						if (isBatchOpen) {
-							batchContainer.style.display = "block";
+							batchContainer.removeClass("is-hidden");
 							batchTextarea.value = this.poolKeys().join("\n");
 							updateBatchCount(this.poolKeys().length);
 							batchTextarea.focus();
 							button.setCta();
 						} else {
-							batchContainer.style.display = "none";
+							batchContainer.addClass("is-hidden");
 							button.removeCta();
 						}
 					});
 			});
 
 		// Expandable batch container
-		batchContainer = panel.createDiv({ cls: "jev-key-batch-container" });
-		batchContainer.style.display = "none";
+		batchContainer = panel.createDiv({ cls: "jev-key-batch-container is-hidden" });
 
 		const batchHeader = batchContainer.createDiv({ cls: "jev-key-batch-header" });
 		batchHeader.createSpan({ cls: "jev-key-batch-title", text: tr("model.keyBatchTitle") });
@@ -206,12 +207,14 @@ export class JevTaggerSettingTab extends PluginSettingTab {
 			},
 		});
 		batchTextarea.value = currentKeys.join("\n");
-		batchTextarea.addEventListener("input", async () => {
-			const parsed = parseApiKeys(batchTextarea.value);
-			await this.setPoolKeys(parsed);
-			keyInput.value = parsed.join(", ");
-			updateCountHint(parsed.length);
-			updateBatchCount(parsed.length);
+		batchTextarea.addEventListener("input", () => {
+			void (async () => {
+				const parsed = parseApiKeys(batchTextarea.value);
+				await this.setPoolKeys(parsed);
+				keyInput.value = parsed.join(", ");
+				updateCountHint(parsed.length);
+				updateBatchCount(parsed.length);
+			})();
 		});
 
 		const batchActions = batchContainer.createDiv({ cls: "jev-key-batch-actions" });
@@ -281,7 +284,7 @@ export class JevTaggerSettingTab extends PluginSettingTab {
 		});
 		closeBtn.onclick = () => {
 			isBatchOpen = false;
-			batchContainer.style.display = "none";
+			batchContainer.addClass("is-hidden");
 			const batchBtnEl = keySetting.controlEl.querySelector("button:not(.clickable-icon)") as HTMLElement;
 			if (batchBtnEl) batchBtnEl.removeClass("mod-cta");
 		};
@@ -318,11 +321,11 @@ export class JevTaggerSettingTab extends PluginSettingTab {
 			}
 		};
 		apply();
-		if (typeof requestAnimationFrame === "function") {
-			requestAnimationFrame(apply);
+		if (typeof window.requestAnimationFrame === "function") {
+			window.requestAnimationFrame(apply);
 		}
-		if (typeof setTimeout === "function") {
-			setTimeout(apply, 10);
+		if (typeof window.setTimeout === "function") {
+			window.setTimeout(apply, 10);
 		}
 	}
 
@@ -335,12 +338,10 @@ export class JevTaggerSettingTab extends PluginSettingTab {
 		const lang = this.plugin.settings.language;
 
 		// 1. Header Block
-		const headerEl = containerEl.createDiv({ cls: "jev-settings-header" });
-		headerEl.createEl("h2", { text: t(lang, "settings.title") });
-		headerEl.createEl("p", {
-			text: t(lang, "settings.subtitle"),
-			cls: "setting-item-description",
-		});
+		new Setting(containerEl)
+			.setName(t(lang, "settings.title"))
+			.setDesc(t(lang, "settings.subtitle"))
+			.setHeading();
 
 		// 2. General Settings
 		new Setting(containerEl).setHeading().setName(t(lang, "settings.section.general"));
@@ -376,7 +377,6 @@ export class JevTaggerSettingTab extends PluginSettingTab {
 			slider
 				.setLimits(0.1, 0.95, 0.05)
 				.setValue(this.plugin.settings.confidenceThreshold)
-				.setDynamicTooltip()
 				.onChange(async (value) => {
 					this.plugin.settings.confidenceThreshold = value;
 					badgeEl.setText(`${Math.round(value * 100)}%`);
@@ -469,7 +469,6 @@ export class JevTaggerSettingTab extends PluginSettingTab {
 
 				// Left: Tag pill with # symbol (clickable to edit)
 				const chip = tagCard.createDiv({ cls: "jev-tag-card-chip" });
-				chip.style.cursor = "pointer";
 				chip.onclick = () => {
 					new TagModal(this.app, this.plugin, tag, () => this.display()).open();
 				};
@@ -518,7 +517,7 @@ export class JevTaggerSettingTab extends PluginSettingTab {
 		} else {
 			// Empty state guidance card
 			const emptyEl = containerEl.createDiv({ cls: "jev-tag-empty-state" });
-			emptyEl.createEl("div", {
+			emptyEl.createDiv({
 				cls: "jev-tag-empty-text",
 				text: t(lang, "settings.tagLibrary.empty"),
 			});
@@ -593,10 +592,10 @@ export class DeleteTagConfirmModal extends Modal {
 				);
 				this.onDeleted();
 				this.close();
-			} catch (err: any) {
+			} catch (err: unknown) {
 				new Notice(
 					t(lang, "settings.tagLibrary.deleteFailed", {
-						error: err?.message || String(err),
+						error: err instanceof Error ? err.message : String(err),
 					})
 				);
 				confirmBtn.disabled = false;

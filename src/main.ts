@@ -84,7 +84,7 @@ export default class JevTaggerPlugin extends Plugin {
 				const activeFile = this.app.workspace.getActiveFile();
 				if (activeFile) {
 					if (!checking) {
-						this.autoApplyTags(activeFile);
+						void this.autoApplyTags(activeFile);
 					}
 					return true;
 				}
@@ -137,12 +137,10 @@ export default class JevTaggerPlugin extends Plugin {
 
 		// Add Settings Tab
 		this.addSettingTab(new JevTaggerSettingTab(this.app, this));
-		console.log("Decision Tagger plugin loaded.");
 	}
 
 	onunload() {
 		this.controllers.forEach(controller => controller.abort());
-		console.log("Decision Tagger plugin unloaded.");
 	}
 
 	syncActiveModel() {
@@ -178,15 +176,17 @@ export default class JevTaggerPlugin extends Plugin {
 	}
 
 	async loadSettings() {
-		const savedData = await this.loadData();
+		const savedData = (await this.loadData()) as Record<string, unknown> | null;
 		const { apiKey, endpoint, ...current } = savedData || {};
 		const migrated = migrateModels(savedData);
-		this.settings = { ...DEFAULT_SETTINGS, ...current, ...migrated, tags: Array.isArray(savedData?.tags) ? savedData.tags : [] };
+		const rawTags = savedData?.tags;
+		const tags: TagDefinition[] = Array.isArray(rawTags) ? (rawTags as TagDefinition[]) : [];
+		this.settings = { ...DEFAULT_SETTINGS, ...current, ...migrated, tags };
 		this.syncActiveModel();
 		this.syncKeyPool();
 
 		// Remove unchanged built-in rules from older versions while preserving custom rules.
-		if (Array.isArray(savedData?.tags)) {
+		if (Array.isArray(rawTags)) {
 			const filteredTags = this.settings.tags.filter(
 				(tag) =>
 					!LEGACY_DEFAULT_TAG_RULES.some(
@@ -216,8 +216,8 @@ export default class JevTaggerPlugin extends Plugin {
 		const found = this.settings.models?.find(model => model.id === this.settings.activeModelId);
 		if (found) {
 			if (found.id === "typesafe" || found.id === "openrouter") {
-				found.endpoint = PROVIDERS[found.id as ModelProvider].endpoint;
-				found.model = (typeof found.model === "string" && found.model.trim()) ? found.model : PROVIDERS[found.id as ModelProvider].model;
+				found.endpoint = PROVIDERS[found.id].endpoint;
+				found.model = (typeof found.model === "string" && found.model.trim()) ? found.model : PROVIDERS[found.id].model;
 			}
 			return found;
 		}
@@ -248,7 +248,7 @@ export default class JevTaggerPlugin extends Plugin {
 	/**
 	 * Extracts clean state for Jev System-1 model evaluation
 	 */
-	public async buildNoteState(file: TFile): Promise<Record<string, any>> {
+	public async buildNoteState(file: TFile): Promise<Record<string, unknown>> {
 		// Obsidian's own rule: only a block that opens at byte 0 is frontmatter.
 		// A looser match would swallow body content up to the next `---`, such as
 		// a horizontal rule, in notes that have no frontmatter at all.
@@ -274,7 +274,7 @@ export default class JevTaggerPlugin extends Plugin {
 			excerpt = text.slice(-260);
 		}
 
-		const state: Record<string, any> = {
+		const state: Record<string, unknown> = {
 			title: title,
 			headings: headings,
 			content_start: introduction,
@@ -353,13 +353,14 @@ export default class JevTaggerPlugin extends Plugin {
 		if (ready !== content) await this.app.vault.modify(file, ready);
 
 		let modified = false;
-		await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+		await this.app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
 			let currentTags: string[] = [];
-			if (frontmatter.tags) {
-				if (Array.isArray(frontmatter.tags)) {
-					currentTags = frontmatter.tags.map((t) => String(t).replace(/^#/, ""));
-				} else if (typeof frontmatter.tags === "string") {
-					currentTags = frontmatter.tags.split(/[\s,]+/).map((t) => t.replace(/^#/, ""));
+			const rawTags = frontmatter["tags"];
+			if (rawTags) {
+				if (Array.isArray(rawTags)) {
+					currentTags = rawTags.map((t) => String(t).replace(/^#/, ""));
+				} else if (typeof rawTags === "string") {
+					currentTags = rawTags.split(/[\s,]+/).map((t) => t.replace(/^#/, ""));
 				}
 			}
 
@@ -368,7 +369,7 @@ export default class JevTaggerPlugin extends Plugin {
 				modified = true;
 			}
 
-			frontmatter.tags = currentTags;
+			frontmatter["tags"] = currentTags;
 		});
 
 		return modified;
@@ -410,36 +411,38 @@ export default class JevTaggerPlugin extends Plugin {
 
 		// 2. Frontmatter, only when the file has one.
 		if (this.app.fileManager?.processFrontMatter && await this.hasFrontmatterBlock(file)) {
-			await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+			await this.app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
 				if (!frontmatter) return;
 
-				if (frontmatter.tags) {
+				const rawTags = frontmatter["tags"];
+				if (rawTags) {
 					let currentTags: string[] = [];
-					if (Array.isArray(frontmatter.tags)) {
-						currentTags = frontmatter.tags.map((t) => String(t).replace(/^#/, "").trim());
-					} else if (typeof frontmatter.tags === "string") {
-						currentTags = frontmatter.tags.split(/[\s,]+/).map((t) => t.replace(/^#/, "").trim());
+					if (Array.isArray(rawTags)) {
+						currentTags = rawTags.map((t) => String(t).replace(/^#/, "").trim());
+					} else if (typeof rawTags === "string") {
+						currentTags = rawTags.split(/[\s,]+/).map((t) => t.replace(/^#/, "").trim());
 					}
 					const initialLength = currentTags.length;
 					currentTags = currentTags.filter((t) => t !== cleanTag);
 					if (currentTags.length !== initialLength) {
 						modified = true;
-						frontmatter.tags = currentTags;
+						frontmatter["tags"] = currentTags;
 					}
 				}
 
-				if (frontmatter.tag) {
+				const rawTag = frontmatter["tag"];
+				if (rawTag) {
 					let currentTags: string[] = [];
-					if (Array.isArray(frontmatter.tag)) {
-						currentTags = frontmatter.tag.map((t) => String(t).replace(/^#/, "").trim());
-					} else if (typeof frontmatter.tag === "string") {
-						currentTags = frontmatter.tag.split(/[\s,]+/).map((t) => t.replace(/^#/, "").trim());
+					if (Array.isArray(rawTag)) {
+						currentTags = rawTag.map((t) => String(t).replace(/^#/, "").trim());
+					} else if (typeof rawTag === "string") {
+						currentTags = rawTag.split(/[\s,]+/).map((t) => t.replace(/^#/, "").trim());
 					}
 					const initialLength = currentTags.length;
 					currentTags = currentTags.filter((t) => t !== cleanTag);
 					if (currentTags.length !== initialLength) {
 						modified = true;
-						frontmatter.tag = currentTags;
+						frontmatter["tag"] = currentTags;
 					}
 				}
 			});
@@ -462,8 +465,9 @@ export default class JevTaggerPlugin extends Plugin {
 		return this.app.vault.getMarkdownFiles().filter(file => {
 			const cache = this.app.metadataCache?.getFileCache ? this.app.metadataCache.getFileCache(file) : null;
 			if (!cache) return false;
-			return (getAllTags(cache) || []).some(found =>
-				(typeof found === "string" ? found : (found as any)?.tag || "").replace(/^#/, "").trim() === cleanTag
+			const tags = getAllTags(cache) || [];
+			return tags.some(found =>
+				found.replace(/^#/, "").trim() === cleanTag
 			);
 		});
 	}

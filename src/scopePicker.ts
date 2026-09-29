@@ -36,7 +36,7 @@ export class ScopePicker {
 		this.disabled = disabled;
 		if (disabled) this.close();
 		this.el.classList.toggle("is-disabled", disabled);
-		this.el.querySelectorAll("button").forEach(button => { (button as HTMLButtonElement).disabled = disabled; });
+		this.el.querySelectorAll<HTMLButtonElement>("button").forEach(button => { button.disabled = disabled; });
 		this.el.querySelector(".jev-scope-toggle")?.setAttribute("aria-disabled", String(disabled));
 	}
 

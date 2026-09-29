@@ -8,7 +8,9 @@ const element = () => ({ text: '', setText(value) { this.text = value; }, empty(
 function load(request = async () => ({ status: 200, json: {} }), timers = {}) {
  const module = { exports: {} };
  const obsidian = { requestUrl: request, Modal: class { constructor(app) { this.app = app; } }, Plugin: class {}, PluginSettingTab: class {}, Notice: class {}, TFolder: class {}, getAllTags: cache => cache.tags || [] };
- vm.runInNewContext(built.outputFiles[0].text, { module, exports: module.exports, require: () => obsidian, URL, AbortController, setTimeout, clearTimeout, setInterval, clearInterval, console, ...timers });
+ const win = { setTimeout, clearTimeout, setInterval, clearInterval, requestAnimationFrame: (fn) => setTimeout(fn, 0), ...timers };
+ win.window = win;
+ vm.runInNewContext(built.outputFiles[0].text, { window: win, module, exports: module.exports, require: () => obsidian, URL, AbortController, setTimeout, clearTimeout, setInterval, clearInterval, console, ...timers });
  return module.exports;
 }
 const tag = (name = 'AI') => ({ name, enabled: true, instructions: 'Classify', matchCriteria: 'AI research', otherCriteria: 'Other topics' });

@@ -138,8 +138,8 @@ export class TagModal extends Modal {
 				}
 				this.onSaved();
 				this.close();
-			} catch (err: any) {
-				new Notice(err?.message || String(err));
+			} catch (err: unknown) {
+				new Notice(err instanceof Error ? err.message : String(err));
 				submitBtn.disabled = false;
 			}
 		};

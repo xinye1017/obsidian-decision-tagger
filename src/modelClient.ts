@@ -58,14 +58,37 @@ export function isNoulProvider(profile: ModelProfile): boolean {
 	return profile.id === "openrouter" || profile.endpoint.includes("openrouter.ai");
 }
 
+export interface DecisionAnswer {
+	choice?: string;
+	confidence?: number;
+	probabilities?: {
+		match?: number;
+		other?: number;
+		[key: string]: number | undefined;
+	};
+	type?: string;
+	noul?: number;
+}
+
+export interface DecisionResponse {
+	model?: string;
+	answers?: Record<string, DecisionAnswer>;
+	usage?: {
+		input_tokens?: number;
+		total_tokens?: number;
+		[key: string]: unknown;
+	};
+	[key: string]: unknown;
+}
+
 export function formatStateAsString(state: unknown): string {
 	if (typeof state === "string") return state;
 	if (!state || typeof state !== "object") return "";
-	const record = state as Record<string, any>;
+	const record = state as Record<string, unknown>;
 	const parts: string[] = [];
-	if (record.title) parts.push(`Title: ${record.title}`);
+	if (typeof record.title === "string" && record.title) parts.push(`Title: ${record.title}`);
 	if (Array.isArray(record.headings) && record.headings.length) {
-		parts.push(`Headings: ${record.headings.join(" > ")}`);
+		parts.push(`Headings: ${record.headings.map(h => String(h)).join(" > ")}`);
 	}
 	if (record.folder_context) parts.push(String(record.folder_context));
 	if (record.content_start) parts.push(String(record.content_start));
@@ -77,12 +100,13 @@ export function defaultProfile(): ModelProfile {
 	return { id: "typesafe", name: "TypeSafe", endpoint: PROVIDERS.typesafe.endpoint, model: PROVIDERS.typesafe.model };
 }
 
-function readProfile(value: any, fallback: ModelProfile): ModelProfile {
+function readProfile(value: unknown, fallback: ModelProfile): ModelProfile {
+	const record = value && typeof value === "object" ? (value as Record<string, unknown>) : null;
 	return {
-		id: typeof value?.id === "string" && value.id ? value.id : fallback.id,
-		name: typeof value?.name === "string" && value.name ? value.name : fallback.name,
-		endpoint: typeof value?.endpoint === "string" ? value.endpoint : fallback.endpoint,
-		model: typeof value?.model === "string" ? value.model : fallback.model,
+		id: typeof record?.id === "string" && record.id ? record.id : fallback.id,
+		name: typeof record?.name === "string" && record.name ? record.name : fallback.name,
+		endpoint: typeof record?.endpoint === "string" ? record.endpoint : fallback.endpoint,
+		model: typeof record?.model === "string" ? record.model : fallback.model,
 	};
 }
 
@@ -96,12 +120,13 @@ function readKeyList(value: unknown, legacy: unknown = ""): string[] {
 }
 
 /** Legacy profiles may still carry the removed `protocol` field; it is dropped here. */
-export function migrateModels(saved: any): {
+export function migrateModels(saved: unknown): {
 	models: ModelProfile[];
 	activeModelId: string;
 	provider?: ModelProvider;
 	apiKeys?: Record<ModelProvider, string[]>;
 } {
+	const savedRecord = saved && typeof saved === "object" ? (saved as Record<string, unknown>) : null;
 	const defaultTs = defaultProfile();
 	const defaultOr: ModelProfile = {
 		id: "openrouter",
@@ -110,22 +135,27 @@ export function migrateModels(saved: any): {
 		model: PROVIDERS.openrouter.model,
 	};
 
-	let provider: ModelProvider = saved?.provider === "openrouter" || saved?.activeModelId === "openrouter" ? "openrouter" : "typesafe";
+	let provider: ModelProvider = savedRecord?.provider === "openrouter" || savedRecord?.activeModelId === "openrouter" ? "openrouter" : "typesafe";
+	const apiKeysRecord = savedRecord?.apiKeys && typeof savedRecord.apiKeys === "object" ? (savedRecord.apiKeys as Record<string, unknown>) : null;
 	const apiKeys: Record<ModelProvider, string[]> = {
-		typesafe: readKeyList(saved?.apiKeys?.typesafe, provider === "typesafe" ? saved?.apiKey : ""),
-		openrouter: readKeyList(saved?.apiKeys?.openrouter, provider === "openrouter" ? saved?.apiKey : ""),
+		typesafe: readKeyList(apiKeysRecord?.typesafe, provider === "typesafe" ? savedRecord?.apiKey : ""),
+		openrouter: readKeyList(apiKeysRecord?.openrouter, provider === "openrouter" ? savedRecord?.apiKey : ""),
 	};
 
 	let models: ModelProfile[];
-	if (Array.isArray(saved?.models) && saved.models.length) {
+	if (Array.isArray(savedRecord?.models) && savedRecord.models.length) {
+		const modelsList = savedRecord.models as unknown[];
 		// Older profiles carried their own key; harvest it into the pool before it is dropped.
-		const legacyKeys = (id: string) => readKeyList(saved.models.find((m: any) => m?.id === id)?.apiKey);
-		models = saved.models.map((p: any) => readProfile(p, defaultTs));
+		const legacyKeys = (id: string) => {
+			const found = modelsList.find(m => m && typeof m === "object" && (m as Record<string, unknown>).id === id);
+			return readKeyList((found as Record<string, unknown> | undefined)?.apiKey);
+		};
+		models = modelsList.map(p => readProfile(p, defaultTs));
 		if (!apiKeys.typesafe.length) apiKeys.typesafe = legacyKeys("typesafe");
 		if (!apiKeys.openrouter.length) apiKeys.openrouter = legacyKeys("openrouter");
 	} else {
-		const ts = readProfile({ ...defaultTs, endpoint: saved?.endpoint }, defaultTs);
-		if (saved?.endpoint) {
+		const ts = readProfile({ ...defaultTs, endpoint: savedRecord?.endpoint }, defaultTs);
+		if (savedRecord?.endpoint) {
 			models = [ts];
 		} else {
 			const or = readProfile({ ...defaultOr }, defaultOr);
@@ -133,8 +163,8 @@ export function migrateModels(saved: any): {
 		}
 	}
 
-	const activeModelId = models.some(p => p.id === saved?.activeModelId)
-		? saved.activeModelId
+	const activeModelId = typeof savedRecord?.activeModelId === "string" && models.some(p => p.id === savedRecord.activeModelId)
+		? savedRecord.activeModelId
 		: (models.some(p => p.id === provider) ? provider : models[0].id);
 
 	return { models, activeModelId, provider, apiKeys };
@@ -171,17 +201,19 @@ function score(value: unknown): number {
 	return value;
 }
 
-export function servedModel(data: any, fallback: string): string {
-	return typeof data?.model === "string" && data.model ? data.model : fallback;
+export function servedModel(data: unknown, fallback: string): string {
+	const record = data && typeof data === "object" ? (data as Record<string, unknown>) : null;
+	return typeof record?.model === "string" && record.model ? record.model : fallback;
 }
 
 /**
  * Reads one `choice` answer per enabled tag from the decision response.
  * Answers must be present exactly once; anything else fails closed.
  */
-export function parseResults(data: any, tags: TagDefinition[]): NoteEvaluationResult[] {
+export function parseResults(data: unknown, tags: TagDefinition[]): NoteEvaluationResult[] {
+	const resp = data && typeof data === "object" ? (data as DecisionResponse) : null;
 	return tags.filter(t => t.enabled).map(tag => {
-		const answer = data?.answers?.[`q_${tag.name}`];
+		const answer = resp?.answers?.[`q_${tag.name}`];
 		if (!answer) throw new ModelError("response");
 		if (typeof answer.choice === "string" && ["match", "other"].includes(answer.choice)) {
 			const probability = answer.probabilities?.match !== undefined
@@ -226,31 +258,31 @@ export class ModelClient {
 	}
 
 	// requestUrl cannot abort its transport. Cancellation/timeout discard late responses.
-	private sendOnce(body: Record<string, unknown>, key: string | null, signal?: AbortSignal): Promise<any> {
-		return new Promise<any>((resolve, reject) => {
+	private sendOnce(body: Record<string, unknown>, key: string | null, signal?: AbortSignal): Promise<DecisionResponse> {
+		return new Promise<DecisionResponse>((resolve, reject) => {
 			let settled = false;
-			const timer = setTimeout(() => finish(new ModelError("timeout")), 60_000);
+			const timer = window.setTimeout(() => finish(new ModelError("timeout")), 60_000);
 			const abort = () => finish(new ModelError("cancelled"));
-			const finish = (error?: ModelError, value?: unknown) => {
+			const finish = (error?: ModelError, value?: DecisionResponse) => {
 				if (settled) return;
 				settled = true;
-				clearTimeout(timer);
+				window.clearTimeout(timer);
 				signal?.removeEventListener("abort", abort);
-				if (error) reject(error); else resolve(value);
+				if (error) reject(error); else resolve(value as DecisionResponse);
 			};
 			signal?.addEventListener("abort", abort, { once: true });
 			Promise.resolve().then(() => {
 				if (signal?.aborted) throw new ModelError("cancelled");
 				return requestUrl({
-				url: resolveEndpoint(this.profile), method: "POST", throw: false,
-				headers: { "Content-Type": "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}) },
-				body: JSON.stringify(body),
+					url: resolveEndpoint(this.profile), method: "POST", throw: false,
+					headers: { "Content-Type": "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}) },
+					body: JSON.stringify(body),
 				});
 			}).then(response => {
 				if (settled) return;
 				if (response.status < 200 || response.status >= 300) return finish(new ModelError("http", response.status));
-				try { finish(undefined, response.json); } catch { finish(new ModelError("response")); }
-			}, error => finish(error instanceof ModelError ? error : new ModelError("network")));
+				try { finish(undefined, response.json as DecisionResponse); } catch { finish(new ModelError("response")); }
+			}, (error: unknown) => finish(error instanceof ModelError ? error : new ModelError("network")));
 		});
 	}
 
@@ -259,7 +291,7 @@ export class ModelClient {
 	 * the key that served it and the request moves on to the next account, so one
 	 * rate limited, exhausted or dead account cannot block the pool.
 	 */
-	private async post(body: Record<string, unknown>, signal?: AbortSignal): Promise<any> {
+	private async post(body: Record<string, unknown>, signal?: AbortSignal): Promise<DecisionResponse> {
 		validateProfile(this.profile);
 		if (signal?.aborted) throw new ModelError("cancelled");
 		const anonymous = this.pool.size === 0;
@@ -327,7 +359,7 @@ export class ModelClient {
 			q_detect: DETECTION_QUESTION,
 		};
 		const data = await this.post({ ...this.modelField(), state, questions }, signal);
-		const answer = data?.answers?.q_detect;
+		const answer = data.answers?.q_detect;
 		if (!answer) throw new ModelError("response");
 		let probability = 0;
 		if (typeof answer.choice === "string" && ["match", "other"].includes(answer.choice)) {
@@ -339,6 +371,11 @@ export class ModelClient {
 		} else {
 			throw new ModelError("response");
 		}
-		return { model: servedModel(data, this.profile.model), probability, inputTokens: Number(data?.usage?.input_tokens ?? data?.usage?.total_tokens) || 0 };
+		const inputTokens = typeof data.usage?.input_tokens === "number"
+			? data.usage.input_tokens
+			: typeof data.usage?.total_tokens === "number"
+			? data.usage.total_tokens
+			: 0;
+		return { model: servedModel(data, this.profile.model), probability, inputTokens };
 	}
 }

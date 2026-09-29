@@ -97,8 +97,9 @@
 .jev-tag-toolbar-buttons { display: flex; gap: 8px; }
 .jev-tag-action-btn { font-size: 12px; }
 .jev-tag-library-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 20px; }
+.is-hidden { display: none !important; }
 .jev-tag-card { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 44px; border-bottom: 1px solid var(--background-modifier-border); }
-.jev-tag-card-chip { display: flex; align-items: center; min-width: 0; gap: 2px; }
+.jev-tag-card-chip { display: flex; align-items: center; min-width: 0; gap: 2px; cursor: pointer; }
 .jev-tag-hash { color: var(--text-accent); }
 .jev-tag-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .jev-tag-card.is-disabled .jev-tag-card-chip { color: var(--text-muted); }

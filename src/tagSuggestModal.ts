@@ -43,7 +43,7 @@ export class TagSuggestModal extends Modal {
 			const session = this.plugin.createEvaluationSession();
 			this.threshold = session.threshold;
 			const cache = this.app.metadataCache.getFileCache(this.file);
-			const raw = cache?.frontmatter?.tags;
+			const raw = (cache?.frontmatter as Record<string, unknown> | undefined)?.["tags"];
 			this.existingTags = new Set((Array.isArray(raw) ? raw.map(String) : typeof raw === "string" ? raw.split(/[\s,]+/) : []).map(tag => tag.replace(/^#/, "")));
 			this.results = await this.plugin.evaluateFile(this.file, session, this.controller.signal, stage => {
 				if (this.closed) return;

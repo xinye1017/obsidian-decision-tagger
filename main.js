@@ -177,9 +177,9 @@ function formatStateAsString(state) {
   if (!state || typeof state !== "object") return "";
   const record = state;
   const parts = [];
-  if (record.title) parts.push(`Title: ${record.title}`);
+  if (typeof record.title === "string" && record.title) parts.push(`Title: ${record.title}`);
   if (Array.isArray(record.headings) && record.headings.length) {
-    parts.push(`Headings: ${record.headings.join(" > ")}`);
+    parts.push(`Headings: ${record.headings.map((h) => String(h)).join(" > ")}`);
   }
   if (record.folder_context) parts.push(String(record.folder_context));
   if (record.content_start) parts.push(String(record.content_start));
@@ -190,11 +190,12 @@ function defaultProfile() {
   return { id: "typesafe", name: "TypeSafe", endpoint: PROVIDERS.typesafe.endpoint, model: PROVIDERS.typesafe.model };
 }
 function readProfile(value, fallback) {
+  const record = value && typeof value === "object" ? value : null;
   return {
-    id: typeof value?.id === "string" && value.id ? value.id : fallback.id,
-    name: typeof value?.name === "string" && value.name ? value.name : fallback.name,
-    endpoint: typeof value?.endpoint === "string" ? value.endpoint : fallback.endpoint,
-    model: typeof value?.model === "string" ? value.model : fallback.model
+    id: typeof record?.id === "string" && record.id ? record.id : fallback.id,
+    name: typeof record?.name === "string" && record.name ? record.name : fallback.name,
+    endpoint: typeof record?.endpoint === "string" ? record.endpoint : fallback.endpoint,
+    model: typeof record?.model === "string" ? record.model : fallback.model
   };
 }
 function readKeyList(value, legacy = "") {
@@ -203,6 +204,7 @@ function readKeyList(value, legacy = "") {
   return [...new Set(keys)];
 }
 function migrateModels(saved) {
+  const savedRecord = saved && typeof saved === "object" ? saved : null;
   const defaultTs = defaultProfile();
   const defaultOr = {
     id: "openrouter",
@@ -210,27 +212,32 @@ function migrateModels(saved) {
     endpoint: PROVIDERS.openrouter.endpoint,
     model: PROVIDERS.openrouter.model
   };
-  let provider = saved?.provider === "openrouter" || saved?.activeModelId === "openrouter" ? "openrouter" : "typesafe";
+  let provider = savedRecord?.provider === "openrouter" || savedRecord?.activeModelId === "openrouter" ? "openrouter" : "typesafe";
+  const apiKeysRecord = savedRecord?.apiKeys && typeof savedRecord.apiKeys === "object" ? savedRecord.apiKeys : null;
   const apiKeys = {
-    typesafe: readKeyList(saved?.apiKeys?.typesafe, provider === "typesafe" ? saved?.apiKey : ""),
-    openrouter: readKeyList(saved?.apiKeys?.openrouter, provider === "openrouter" ? saved?.apiKey : "")
+    typesafe: readKeyList(apiKeysRecord?.typesafe, provider === "typesafe" ? savedRecord?.apiKey : ""),
+    openrouter: readKeyList(apiKeysRecord?.openrouter, provider === "openrouter" ? savedRecord?.apiKey : "")
   };
   let models;
-  if (Array.isArray(saved?.models) && saved.models.length) {
-    const legacyKeys = (id) => readKeyList(saved.models.find((m) => m?.id === id)?.apiKey);
-    models = saved.models.map((p) => readProfile(p, defaultTs));
+  if (Array.isArray(savedRecord?.models) && savedRecord.models.length) {
+    const modelsList = savedRecord.models;
+    const legacyKeys = (id) => {
+      const found = modelsList.find((m) => m && typeof m === "object" && m.id === id);
+      return readKeyList(found?.apiKey);
+    };
+    models = modelsList.map((p) => readProfile(p, defaultTs));
     if (!apiKeys.typesafe.length) apiKeys.typesafe = legacyKeys("typesafe");
     if (!apiKeys.openrouter.length) apiKeys.openrouter = legacyKeys("openrouter");
   } else {
-    const ts = readProfile({ ...defaultTs, endpoint: saved?.endpoint }, defaultTs);
-    if (saved?.endpoint) {
+    const ts = readProfile({ ...defaultTs, endpoint: savedRecord?.endpoint }, defaultTs);
+    if (savedRecord?.endpoint) {
       models = [ts];
     } else {
       const or = readProfile({ ...defaultOr }, defaultOr);
       models = [ts, or];
     }
   }
-  const activeModelId = models.some((p) => p.id === saved?.activeModelId) ? saved.activeModelId : models.some((p) => p.id === provider) ? provider : models[0].id;
+  const activeModelId = typeof savedRecord?.activeModelId === "string" && models.some((p) => p.id === savedRecord.activeModelId) ? savedRecord.activeModelId : models.some((p) => p.id === provider) ? provider : models[0].id;
   return { models, activeModelId, provider, apiKeys };
 }
 var ModelError = class extends Error {
@@ -261,11 +268,13 @@ function score(value) {
   return value;
 }
 function servedModel(data, fallback) {
-  return typeof data?.model === "string" && data.model ? data.model : fallback;
+  const record = data && typeof data === "object" ? data : null;
+  return typeof record?.model === "string" && record.model ? record.model : fallback;
 }
 function parseResults(data, tags) {
+  const resp = data && typeof data === "object" ? data : null;
   return tags.filter((t2) => t2.enabled).map((tag) => {
-    const answer = data?.answers?.[`q_${tag.name}`];
+    const answer = resp?.answers?.[`q_${tag.name}`];
     if (!answer) throw new ModelError("response");
     if (typeof answer.choice === "string" && ["match", "other"].includes(answer.choice)) {
       const probability = answer.probabilities?.match !== void 0 ? score(answer.probabilities.match) : answer.choice === "match" ? score(answer.confidence) : 1 - score(answer.confidence);
@@ -303,12 +312,12 @@ var ModelClient = class {
   sendOnce(body, key, signal) {
     return new Promise((resolve, reject) => {
       let settled = false;
-      const timer = setTimeout(() => finish(new ModelError("timeout")), 6e4);
+      const timer = window.setTimeout(() => finish(new ModelError("timeout")), 6e4);
       const abort = () => finish(new ModelError("cancelled"));
       const finish = (error, value) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
+        window.clearTimeout(timer);
         signal?.removeEventListener("abort", abort);
         if (error) reject(error);
         else resolve(value);
@@ -404,7 +413,7 @@ var ModelClient = class {
       q_detect: DETECTION_QUESTION
     };
     const data = await this.post({ ...this.modelField(), state, questions }, signal);
-    const answer = data?.answers?.q_detect;
+    const answer = data.answers?.q_detect;
     if (!answer) throw new ModelError("response");
     let probability = 0;
     if (typeof answer.choice === "string" && ["match", "other"].includes(answer.choice)) {
@@ -414,7 +423,8 @@ var ModelClient = class {
     } else {
       throw new ModelError("response");
     }
-    return { model: servedModel(data, this.profile.model), probability, inputTokens: Number(data?.usage?.input_tokens ?? data?.usage?.total_tokens) || 0 };
+    const inputTokens = typeof data.usage?.input_tokens === "number" ? data.usage.input_tokens : typeof data.usage?.total_tokens === "number" ? data.usage.total_tokens : 0;
+    return { model: servedModel(data, this.profile.model), probability, inputTokens };
   }
 };
 
@@ -836,10 +846,10 @@ var translations = {
 function t(language, key, params) {
   const template = translations[language]?.[key] ?? translations.en[key] ?? key;
   if (!params) return template;
-  return template.replace(
-    /\{(\w+)\}/g,
-    (match, name) => Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : match
-  );
+  return template.replace(/\{(\w+)\}/g, (match, name) => {
+    const val = params[name];
+    return val !== void 0 ? String(val) : match;
+  });
 }
 
 // src/progressView.ts
@@ -1074,8 +1084,7 @@ var BatchTagModal = class extends import_obsidian3.Modal {
     );
     this.progress = new ProgressView(this.contentEl, this.plugin.settings.language);
     this.currentFile = this.contentEl.createDiv({ cls: "jev-batch-current-file" });
-    this.resultsSection = this.contentEl.createDiv({ cls: "jev-batch-results" });
-    this.resultsSection.style.display = "none";
+    this.resultsSection = this.contentEl.createDiv({ cls: "jev-batch-results is-hidden" });
     const stats = this.resultsSection.createDiv({ cls: "jev-batch-stats" });
     this.metrics = ["batch.statScanned", "batch.statModified", "batch.statAdded", "batch.statFailed"].map((key) => {
       const metric = stats.createDiv({ cls: "jev-stat-card" });
@@ -1154,7 +1163,7 @@ var BatchTagModal = class extends import_obsidian3.Modal {
     this.ready();
     this.updateModelLabel(concurrency);
     this.log.empty();
-    if (this.resultsSection) this.resultsSection.style.display = "";
+    if (this.resultsSection) this.resultsSection.removeClass("is-hidden");
     this.running = this.plugin.batchRunning = true;
     this.controller = this.plugin.createController();
     const signal = this.controller.signal;
@@ -1166,7 +1175,7 @@ var BatchTagModal = class extends import_obsidian3.Modal {
       const scopeName = this.folder || (this.app.vault.getName ? this.app.vault.getName() : "Vault");
       this.addLog(this.tr("batch.logStartParallel", { scope: scopeName, total: files.length, concurrency }));
     }
-    const timer = setInterval(() => this.refresh(), 1e3);
+    const timer = window.setInterval(() => this.refresh(), 1e3);
     let nextIndex = 0;
     const activeFiles = /* @__PURE__ */ new Set();
     const updateActiveFilesDisplay = () => {
@@ -1235,14 +1244,14 @@ var BatchTagModal = class extends import_obsidian3.Modal {
           this.refresh();
         }
         if (signal.aborted) break;
-        await new Promise((resolve) => setTimeout(resolve, concurrency === 1 ? 80 : 30));
+        await new Promise((resolve) => window.setTimeout(resolve, concurrency === 1 ? 80 : 30));
       }
     };
     try {
       await Promise.all(Array.from({ length: concurrency }, () => runWorker()));
     } finally {
-      clearInterval(timer);
-      this.plugin.releaseController(this.controller);
+      window.clearInterval(timer);
+      if (this.controller) this.plugin.releaseController(this.controller);
       this.running = this.plugin.batchRunning = false;
       if (!this.closed) {
         const key = signal.aborted ? "batch.cancelled" : this.failed ? "batch.withErrors" : "batch.allDone";
@@ -1358,7 +1367,7 @@ var TagModal = class extends import_obsidian4.Modal {
         this.onSaved();
         this.close();
       } catch (err) {
-        new import_obsidian4.Notice(err?.message || String(err));
+        new import_obsidian4.Notice(err instanceof Error ? err.message : String(err));
         submitBtn.disabled = false;
       }
     };
@@ -1462,20 +1471,22 @@ var JevTaggerSettingTab = class extends import_obsidian5.PluginSettingTab {
         if (batchTextarea) batchTextarea.value = parsed.join("\n");
         updateBatchCount(parsed.length);
       });
-      keyInput.addEventListener("paste", async (e) => {
+      keyInput.addEventListener("paste", (e) => {
         const textData = e.clipboardData?.getData("text");
         if (textData && (textData.includes("\n") || textData.includes("\r") || textData.includes("\uFF0C") || textData.includes(","))) {
           e.preventDefault();
           const incoming = parseApiKeys(textData);
           if (incoming.length) {
-            const current = parseApiKeys(keyInput.value);
-            const merged = Array.from(/* @__PURE__ */ new Set([...current, ...incoming]));
-            keyInput.value = merged.join(", ");
-            if (batchTextarea) batchTextarea.value = merged.join("\n");
-            await this.setPoolKeys(merged);
-            updateCountHint(merged.length);
-            updateBatchCount(merged.length);
-            new import_obsidian5.Notice(tr("model.keyClipboardImported", { count: incoming.length, total: merged.length }));
+            void (async () => {
+              const current = parseApiKeys(keyInput.value);
+              const merged = Array.from(/* @__PURE__ */ new Set([...current, ...incoming]));
+              keyInput.value = merged.join(", ");
+              if (batchTextarea) batchTextarea.value = merged.join("\n");
+              await this.setPoolKeys(merged);
+              updateCountHint(merged.length);
+              updateBatchCount(merged.length);
+              new import_obsidian5.Notice(tr("model.keyClipboardImported", { count: incoming.length, total: merged.length }));
+            })();
           }
         }
       });
@@ -1489,19 +1500,18 @@ var JevTaggerSettingTab = class extends import_obsidian5.PluginSettingTab {
       button.setButtonText(tr("model.keyBatchButton")).setTooltip(tr("model.keyBatchTitle")).onClick(() => {
         isBatchOpen = !isBatchOpen;
         if (isBatchOpen) {
-          batchContainer.style.display = "block";
+          batchContainer.removeClass("is-hidden");
           batchTextarea.value = this.poolKeys().join("\n");
           updateBatchCount(this.poolKeys().length);
           batchTextarea.focus();
           button.setCta();
         } else {
-          batchContainer.style.display = "none";
+          batchContainer.addClass("is-hidden");
           button.removeCta();
         }
       });
     });
-    batchContainer = panel.createDiv({ cls: "jev-key-batch-container" });
-    batchContainer.style.display = "none";
+    batchContainer = panel.createDiv({ cls: "jev-key-batch-container is-hidden" });
     const batchHeader = batchContainer.createDiv({ cls: "jev-key-batch-header" });
     batchHeader.createSpan({ cls: "jev-key-batch-title", text: tr("model.keyBatchTitle") });
     batchCountEl = batchHeader.createSpan({ cls: "jev-key-batch-count" });
@@ -1518,12 +1528,14 @@ sk-...
       }
     });
     batchTextarea.value = currentKeys.join("\n");
-    batchTextarea.addEventListener("input", async () => {
-      const parsed = parseApiKeys(batchTextarea.value);
-      await this.setPoolKeys(parsed);
-      keyInput.value = parsed.join(", ");
-      updateCountHint(parsed.length);
-      updateBatchCount(parsed.length);
+    batchTextarea.addEventListener("input", () => {
+      void (async () => {
+        const parsed = parseApiKeys(batchTextarea.value);
+        await this.setPoolKeys(parsed);
+        keyInput.value = parsed.join(", ");
+        updateCountHint(parsed.length);
+        updateBatchCount(parsed.length);
+      })();
     });
     const batchActions = batchContainer.createDiv({ cls: "jev-key-batch-actions" });
     const pasteBtn = batchActions.createEl("button", {
@@ -1588,7 +1600,7 @@ sk-...
     });
     closeBtn.onclick = () => {
       isBatchOpen = false;
-      batchContainer.style.display = "none";
+      batchContainer.addClass("is-hidden");
       const batchBtnEl = keySetting.controlEl.querySelector("button:not(.clickable-icon)");
       if (batchBtnEl) batchBtnEl.removeClass("mod-cta");
     };
@@ -1622,11 +1634,11 @@ sk-...
       }
     };
     apply();
-    if (typeof requestAnimationFrame === "function") {
-      requestAnimationFrame(apply);
+    if (typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(apply);
     }
-    if (typeof setTimeout === "function") {
-      setTimeout(apply, 10);
+    if (typeof window.setTimeout === "function") {
+      window.setTimeout(apply, 10);
     }
   }
   display() {
@@ -1635,12 +1647,7 @@ sk-...
     containerEl.empty();
     containerEl.addClass("jev-settings-container");
     const lang = this.plugin.settings.language;
-    const headerEl = containerEl.createDiv({ cls: "jev-settings-header" });
-    headerEl.createEl("h2", { text: t(lang, "settings.title") });
-    headerEl.createEl("p", {
-      text: t(lang, "settings.subtitle"),
-      cls: "setting-item-description"
-    });
+    new import_obsidian5.Setting(containerEl).setName(t(lang, "settings.title")).setDesc(t(lang, "settings.subtitle")).setHeading();
     new import_obsidian5.Setting(containerEl).setHeading().setName(t(lang, "settings.section.general"));
     new import_obsidian5.Setting(containerEl).setName(t(lang, "settings.language.name")).setDesc(t(lang, "settings.language.desc")).addDropdown((dropdown) => {
       dropdown.selectEl.setAttribute("aria-label", t(lang, "settings.language.name"));
@@ -1660,7 +1667,7 @@ sk-...
       text: `${currentPct}%`
     });
     thresholdSetting.addSlider(
-      (slider) => slider.setLimits(0.1, 0.95, 0.05).setValue(this.plugin.settings.confidenceThreshold).setDynamicTooltip().onChange(async (value) => {
+      (slider) => slider.setLimits(0.1, 0.95, 0.05).setValue(this.plugin.settings.confidenceThreshold).onChange(async (value) => {
         this.plugin.settings.confidenceThreshold = value;
         badgeEl.setText(`${Math.round(value * 100)}%`);
         await this.plugin.saveSettings();
@@ -1722,7 +1729,6 @@ sk-...
           cls: `jev-tag-card ${tag.enabled ? "is-enabled" : "is-disabled"}`
         });
         const chip = tagCard.createDiv({ cls: "jev-tag-card-chip" });
-        chip.style.cursor = "pointer";
         chip.onclick = () => {
           new TagModal(this.app, this.plugin, tag, () => this.display()).open();
         };
@@ -1760,7 +1766,7 @@ sk-...
       });
     } else {
       const emptyEl = containerEl.createDiv({ cls: "jev-tag-empty-state" });
-      emptyEl.createEl("div", {
+      emptyEl.createDiv({
         cls: "jev-tag-empty-text",
         text: t(lang, "settings.tagLibrary.empty")
       });
@@ -1825,7 +1831,7 @@ var DeleteTagConfirmModal = class extends import_obsidian5.Modal {
       } catch (err) {
         new import_obsidian5.Notice(
           t(lang, "settings.tagLibrary.deleteFailed", {
-            error: err?.message || String(err)
+            error: err instanceof Error ? err.message : String(err)
           })
         );
         confirmBtn.disabled = false;
@@ -1883,7 +1889,7 @@ var TagSuggestModal = class extends import_obsidian6.Modal {
       const session = this.plugin.createEvaluationSession();
       this.threshold = session.threshold;
       const cache = this.app.metadataCache.getFileCache(this.file);
-      const raw = cache?.frontmatter?.tags;
+      const raw = cache?.frontmatter?.["tags"];
       this.existingTags = new Set((Array.isArray(raw) ? raw.map(String) : typeof raw === "string" ? raw.split(/[\s,]+/) : []).map((tag) => tag.replace(/^#/, "")));
       this.results = await this.plugin.evaluateFile(this.file, session, this.controller.signal, (stage) => {
         if (this.closed) return;
@@ -2046,7 +2052,7 @@ var JevTaggerPlugin = class extends import_obsidian7.Plugin {
         const activeFile = this.app.workspace.getActiveFile();
         if (activeFile) {
           if (!checking) {
-            this.autoApplyTags(activeFile);
+            void this.autoApplyTags(activeFile);
           }
           return true;
         }
@@ -2086,11 +2092,9 @@ var JevTaggerPlugin = class extends import_obsidian7.Plugin {
       })
     );
     this.addSettingTab(new JevTaggerSettingTab(this.app, this));
-    console.log("Decision Tagger plugin loaded.");
   }
   onunload() {
     this.controllers.forEach((controller) => controller.abort());
-    console.log("Decision Tagger plugin unloaded.");
   }
   syncActiveModel() {
     const provider = this.settings.provider || "typesafe";
@@ -2126,10 +2130,12 @@ var JevTaggerPlugin = class extends import_obsidian7.Plugin {
     const savedData = await this.loadData();
     const { apiKey, endpoint, ...current } = savedData || {};
     const migrated = migrateModels(savedData);
-    this.settings = { ...DEFAULT_SETTINGS, ...current, ...migrated, tags: Array.isArray(savedData?.tags) ? savedData.tags : [] };
+    const rawTags = savedData?.tags;
+    const tags = Array.isArray(rawTags) ? rawTags : [];
+    this.settings = { ...DEFAULT_SETTINGS, ...current, ...migrated, tags };
     this.syncActiveModel();
     this.syncKeyPool();
-    if (Array.isArray(savedData?.tags)) {
+    if (Array.isArray(rawTags)) {
       const filteredTags = this.settings.tags.filter(
         (tag) => !LEGACY_DEFAULT_TAG_RULES.some(
           (rule) => tag.name === rule.name && tag.instructions === rule.instructions && tag.matchCriteria === rule.matchCriteria && tag.otherCriteria === rule.otherCriteria
@@ -2269,18 +2275,19 @@ var JevTaggerPlugin = class extends import_obsidian7.Plugin {
     let modified = false;
     await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
       let currentTags = [];
-      if (frontmatter.tags) {
-        if (Array.isArray(frontmatter.tags)) {
-          currentTags = frontmatter.tags.map((t2) => String(t2).replace(/^#/, ""));
-        } else if (typeof frontmatter.tags === "string") {
-          currentTags = frontmatter.tags.split(/[\s,]+/).map((t2) => t2.replace(/^#/, ""));
+      const rawTags = frontmatter["tags"];
+      if (rawTags) {
+        if (Array.isArray(rawTags)) {
+          currentTags = rawTags.map((t2) => String(t2).replace(/^#/, ""));
+        } else if (typeof rawTags === "string") {
+          currentTags = rawTags.split(/[\s,]+/).map((t2) => t2.replace(/^#/, ""));
         }
       }
       if (!currentTags.includes(tag)) {
         currentTags.push(tag);
         modified = true;
       }
-      frontmatter.tags = currentTags;
+      frontmatter["tags"] = currentTags;
     });
     return modified;
   }
@@ -2317,32 +2324,34 @@ var JevTaggerPlugin = class extends import_obsidian7.Plugin {
     if (this.app.fileManager?.processFrontMatter && await this.hasFrontmatterBlock(file)) {
       await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
         if (!frontmatter) return;
-        if (frontmatter.tags) {
+        const rawTags = frontmatter["tags"];
+        if (rawTags) {
           let currentTags = [];
-          if (Array.isArray(frontmatter.tags)) {
-            currentTags = frontmatter.tags.map((t2) => String(t2).replace(/^#/, "").trim());
-          } else if (typeof frontmatter.tags === "string") {
-            currentTags = frontmatter.tags.split(/[\s,]+/).map((t2) => t2.replace(/^#/, "").trim());
+          if (Array.isArray(rawTags)) {
+            currentTags = rawTags.map((t2) => String(t2).replace(/^#/, "").trim());
+          } else if (typeof rawTags === "string") {
+            currentTags = rawTags.split(/[\s,]+/).map((t2) => t2.replace(/^#/, "").trim());
           }
           const initialLength = currentTags.length;
           currentTags = currentTags.filter((t2) => t2 !== cleanTag);
           if (currentTags.length !== initialLength) {
             modified = true;
-            frontmatter.tags = currentTags;
+            frontmatter["tags"] = currentTags;
           }
         }
-        if (frontmatter.tag) {
+        const rawTag = frontmatter["tag"];
+        if (rawTag) {
           let currentTags = [];
-          if (Array.isArray(frontmatter.tag)) {
-            currentTags = frontmatter.tag.map((t2) => String(t2).replace(/^#/, "").trim());
-          } else if (typeof frontmatter.tag === "string") {
-            currentTags = frontmatter.tag.split(/[\s,]+/).map((t2) => t2.replace(/^#/, "").trim());
+          if (Array.isArray(rawTag)) {
+            currentTags = rawTag.map((t2) => String(t2).replace(/^#/, "").trim());
+          } else if (typeof rawTag === "string") {
+            currentTags = rawTag.split(/[\s,]+/).map((t2) => t2.replace(/^#/, "").trim());
           }
           const initialLength = currentTags.length;
           currentTags = currentTags.filter((t2) => t2 !== cleanTag);
           if (currentTags.length !== initialLength) {
             modified = true;
-            frontmatter.tag = currentTags;
+            frontmatter["tag"] = currentTags;
           }
         }
       });
@@ -2362,8 +2371,9 @@ var JevTaggerPlugin = class extends import_obsidian7.Plugin {
     return this.app.vault.getMarkdownFiles().filter((file) => {
       const cache = this.app.metadataCache?.getFileCache ? this.app.metadataCache.getFileCache(file) : null;
       if (!cache) return false;
-      return ((0, import_obsidian7.getAllTags)(cache) || []).some(
-        (found) => (typeof found === "string" ? found : found?.tag || "").replace(/^#/, "").trim() === cleanTag
+      const tags = (0, import_obsidian7.getAllTags)(cache) || [];
+      return tags.some(
+        (found) => found.replace(/^#/, "").trim() === cleanTag
       );
     });
   }

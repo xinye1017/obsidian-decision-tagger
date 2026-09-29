@@ -76,8 +76,7 @@ export class BatchTagModal extends Modal {
 		);
 		this.progress = new ProgressView(this.contentEl, this.plugin.settings.language);
 		this.currentFile = this.contentEl.createDiv({ cls: "jev-batch-current-file" });
-		this.resultsSection = this.contentEl.createDiv({ cls: "jev-batch-results" });
-		this.resultsSection.style.display = "none";
+		this.resultsSection = this.contentEl.createDiv({ cls: "jev-batch-results is-hidden" });
 		const stats = this.resultsSection.createDiv({ cls: "jev-batch-stats" });
 		this.metrics = (["batch.statScanned", "batch.statModified", "batch.statAdded", "batch.statFailed"] as const).map(key => {
 			const metric = stats.createDiv({ cls: "jev-stat-card" });
@@ -138,7 +137,7 @@ export class BatchTagModal extends Modal {
 		const availableKeys = session.client.pool ? session.client.pool.available().length : 1;
 		const concurrency = Math.max(1, Math.min(availableKeys, files.length, 8));
 		this.ready(); this.updateModelLabel(concurrency); this.log.empty();
-		if (this.resultsSection) this.resultsSection.style.display = "";
+		if (this.resultsSection) this.resultsSection.removeClass("is-hidden");
 		this.running = this.plugin.batchRunning = true;
 		this.controller = this.plugin.createController();
 		const signal = this.controller.signal;
@@ -150,7 +149,7 @@ export class BatchTagModal extends Modal {
 			const scopeName = this.folder || (this.app.vault.getName ? this.app.vault.getName() : "Vault");
 			this.addLog(this.tr("batch.logStartParallel", { scope: scopeName, total: files.length, concurrency }));
 		}
-		const timer = setInterval(() => this.refresh(), 1000);
+		const timer = window.setInterval(() => this.refresh(), 1000);
 
 		let nextIndex = 0;
 		const activeFiles = new Set<string>();
@@ -215,14 +214,15 @@ export class BatchTagModal extends Modal {
 					this.refresh();
 				}
 				if (signal.aborted) break;
-				await new Promise(resolve => setTimeout(resolve, concurrency === 1 ? 80 : 30));
+				await new Promise(resolve => window.setTimeout(resolve, concurrency === 1 ? 80 : 30));
 			}
 		};
 
 		try {
 			await Promise.all(Array.from({ length: concurrency }, () => runWorker()));
 		} finally {
-			clearInterval(timer); this.plugin.releaseController(this.controller!);
+			window.clearInterval(timer);
+			if (this.controller) this.plugin.releaseController(this.controller);
 			this.running = this.plugin.batchRunning = false;
 			if (!this.closed) {
 				const key = signal.aborted ? "batch.cancelled" : this.failed ? "batch.withErrors" : "batch.allDone";

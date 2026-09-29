@@ -468,7 +468,8 @@ export function t(
 	const template: string = translations[language]?.[key] ?? translations.en[key] ?? key;
 	if (!params) return template;
 
-	return template.replace(/\{(\w+)\}/g, (match, name) =>
-		Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : match
-	);
+	return template.replace(/\{(\w+)\}/g, (match, name) => {
+		const val = params[name];
+		return val !== undefined ? String(val) : match;
+	});
 }
