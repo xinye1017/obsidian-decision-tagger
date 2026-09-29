@@ -50,6 +50,7 @@ export class BatchTagModal extends Modal {
 	private start: HTMLButtonElement;
 	private stop: HTMLButtonElement;
 	private picker: ScopePicker;
+	private resultsSection: HTMLElement;
 	private counts = new Map<string, number>();
 	constructor(app: App, private plugin: JevTaggerPlugin) { super(app); }
 	private tr(key: TranslationKey, params?: Record<string, string | number>) { return t(this.plugin.settings.language, key, params); }
@@ -63,7 +64,6 @@ export class BatchTagModal extends Modal {
 		const header = this.contentEl.createDiv({ cls: "jev-tagger-header" });
 		header.createDiv({ cls: "jev-eyebrow", text: "DECISION TAGGER / BATCH" });
 		header.createEl("h2", { text: this.tr("batch.title") });
-		header.createDiv({ cls: "jev-tagger-subtitle", text: this.tr("batch.subtitle", { threshold: Math.round(this.plugin.settings.confidenceThreshold * 100) }) });
 		this.modelLabel = header.createDiv({ cls: "jev-model-label" });
 		this.updateModelLabel();
 		this.counts = countNotesByFolder(this.app.vault.getMarkdownFiles().map(file => file.path));
@@ -76,15 +76,17 @@ export class BatchTagModal extends Modal {
 		);
 		this.progress = new ProgressView(this.contentEl, this.plugin.settings.language);
 		this.currentFile = this.contentEl.createDiv({ cls: "jev-batch-current-file" });
-		const stats = this.contentEl.createDiv({ cls: "jev-batch-stats" });
+		this.resultsSection = this.contentEl.createDiv({ cls: "jev-batch-results" });
+		this.resultsSection.style.display = "none";
+		const stats = this.resultsSection.createDiv({ cls: "jev-batch-stats" });
 		this.metrics = (["batch.statScanned", "batch.statModified", "batch.statAdded", "batch.statFailed"] as const).map(key => {
 			const metric = stats.createDiv({ cls: "jev-stat-card" });
 			const value = metric.createDiv({ cls: "jev-stat-num", text: "0" });
 			metric.createDiv({ cls: "jev-stat-label", text: this.tr(key) }); return value;
 		});
-		this.detail = this.contentEl.createDiv({ cls: "jev-batch-detail" });
-		this.contentEl.createEl("h3", { text: this.tr("batch.logHeader"), cls: "jev-log-heading" });
-		this.log = this.contentEl.createDiv({ cls: "jev-batch-log", attr: { "aria-label": this.tr("batch.logHeader"), tabindex: "0" } });
+		this.detail = this.resultsSection.createDiv({ cls: "jev-batch-detail" });
+		this.resultsSection.createEl("h3", { text: this.tr("batch.logHeader"), cls: "jev-log-heading" });
+		this.log = this.resultsSection.createDiv({ cls: "jev-batch-log", attr: { "aria-label": this.tr("batch.logHeader"), tabindex: "0" } });
 		this.addLog(this.tr("batch.startHint"));
 		const footer = this.contentEl.createDiv({ cls: "jev-actions-footer" });
 		this.stop = footer.createEl("button", { text: this.tr("batch.close") });
@@ -93,8 +95,9 @@ export class BatchTagModal extends Modal {
 		this.start.onclick = () => this.run();
 		this.ready();
 	}
-	private updateModelLabel() {
-		this.modelLabel.setText(`${this.plugin.activeModel.name} · ${this.plugin.activeModel.model} · ${Math.round(this.plugin.settings.confidenceThreshold * 100)}%`);
+	private updateModelLabel(concurrency = 1) {
+		const base = `${this.plugin.activeModel.model} · ${Math.round(this.plugin.settings.confidenceThreshold * 100)}%`;
+		this.modelLabel.setText(concurrency > 1 ? `${base} · ${this.tr("batch.concurrency", { count: concurrency })}` : base);
 	}
 	private ready() {
 		this.counts = countNotesByFolder(this.app.vault.getMarkdownFiles().map(file => file.path));
@@ -132,7 +135,10 @@ export class BatchTagModal extends Modal {
 		catch (error) { this.progress.status.setText(this.plugin.errorText(error)); return; }
 		const files = this.files();
 		if (!files.length) { this.ready(); return; }
-		this.ready(); this.updateModelLabel(); this.log.empty();
+		const availableKeys = session.client.pool ? session.client.pool.available().length : 1;
+		const concurrency = Math.max(1, Math.min(availableKeys, files.length, 8));
+		this.ready(); this.updateModelLabel(concurrency); this.log.empty();
+		if (this.resultsSection) this.resultsSection.style.display = "";
 		this.running = this.plugin.batchRunning = true;
 		this.controller = this.plugin.createController();
 		const signal = this.controller.signal;
@@ -140,21 +146,52 @@ export class BatchTagModal extends Modal {
 		this.start.disabled = true;
 		this.picker.setDisabled(true);
 		this.stop.setText(this.tr("batch.stopButton"));
+		if (concurrency > 1) {
+			const scopeName = this.folder || (this.app.vault.getName ? this.app.vault.getName() : "Vault");
+			this.addLog(this.tr("batch.logStartParallel", { scope: scopeName, total: files.length, concurrency }));
+		}
 		const timer = setInterval(() => this.refresh(), 1000);
-		try {
-			for (const file of files) {
-				if (signal.aborted) break;
-				this.currentFile.setText(file.path); this.currentFile.title = file.path;
+
+		let nextIndex = 0;
+		const activeFiles = new Set<string>();
+
+		const updateActiveFilesDisplay = () => {
+			if (this.closed) return;
+			if (activeFiles.size === 0) {
+				this.currentFile.setText("");
+				this.currentFile.title = "";
+			} else if (concurrency === 1) {
+				const path = Array.from(activeFiles)[0];
+				this.currentFile.setText(path);
+				this.currentFile.title = path;
+			} else {
+				const names = Array.from(activeFiles).map(p => {
+					const parts = p.split("/");
+					return parts[parts.length - 1] || p;
+				});
+				this.currentFile.setText(this.tr("batch.activeParallel", { count: activeFiles.size, names: names.join(", ") }));
+				this.currentFile.title = Array.from(activeFiles).join("\n");
+				this.progress.status.setText(this.tr("progress.evaluating"));
+			}
+		};
+
+		const runWorker = async () => {
+			while (nextIndex < files.length && !signal.aborted) {
+				const file = files[nextIndex++];
+				if (!file || signal.aborted) break;
+
+				activeFiles.add(file.path);
+				updateActiveFilesDisplay();
 				const addedNames: string[] = [];
 				let finished = false;
 				try {
 					const results = await this.plugin.evaluateFile(file, session, signal, stage => {
 						if (this.closed) return;
-						this.progress.status.setText(this.tr(`progress.${stage}`));
+						if (concurrency === 1) this.progress.status.setText(this.tr(`progress.${stage}`));
 					});
 					if (signal.aborted) break;
 					const eligible = results.filter(result => isEligible(result, session.threshold));
-					this.progress.status.setText(this.tr("progress.writing"));
+					if (concurrency === 1) this.progress.status.setText(this.tr("progress.writing"));
 					for (const result of eligible) {
 						if (signal.aborted) break;
 						if (await this.plugin.addTagToFile(file, result.tagName)) { this.added++; addedNames.push(result.tagName); }
@@ -169,17 +206,23 @@ export class BatchTagModal extends Modal {
 					this.addLog(this.tr("batch.logError", { name: file.basename, error: this.plugin.errorText(error) }), "error");
 					// Stop the run when no key can serve the request any more: a dead
 					// endpoint, a dead pool, or an entire pool that is limited or broke.
-					if (error instanceof ModelError && (error.code === "config" || error.code === "quota" || (error.code === "http" && [401, 402, 403, 404, 429].includes(error.status)))) this.controller.abort();
+					if (error instanceof ModelError && (error.code === "config" || error.code === "quota" || (error.code === "http" && [401, 402, 403, 404, 429].includes(error.status)))) this.controller?.abort();
 				} finally {
+					activeFiles.delete(file.path);
+					updateActiveFilesDisplay();
 					if (addedNames.length) { this.modified++; this.addLog(this.tr("batch.logAddedTags", { name: file.basename, tags: addedNames.map(name => `#${name}`).join(" · ") }), "success"); }
 					if (finished) this.processed++;
 					this.refresh();
 				}
 				if (signal.aborted) break;
-				await new Promise(resolve => setTimeout(resolve, 80));
+				await new Promise(resolve => setTimeout(resolve, concurrency === 1 ? 80 : 30));
 			}
+		};
+
+		try {
+			await Promise.all(Array.from({ length: concurrency }, () => runWorker()));
 		} finally {
-			clearInterval(timer); this.plugin.releaseController(this.controller);
+			clearInterval(timer); this.plugin.releaseController(this.controller!);
 			this.running = this.plugin.batchRunning = false;
 			if (!this.closed) {
 				const key = signal.aborted ? "batch.cancelled" : this.failed ? "batch.withErrors" : "batch.allDone";
@@ -193,5 +236,5 @@ export class BatchTagModal extends Modal {
 			}
 		}
 	}
-	onClose() { this.closed = true; this.controller?.abort(); this.contentEl.empty(); }
+	onClose() { this.closed = true; this.controller?.abort(); this.picker?.close(); this.contentEl.empty(); }
 }

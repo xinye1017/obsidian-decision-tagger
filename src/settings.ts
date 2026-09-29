@@ -5,8 +5,7 @@ import { BatchTagModal } from "./batchTagModal";
 import { TagModal } from "./tagModal";
 import { Language, LANGUAGES, LANGUAGE_OPTIONS, TranslationKey, t } from "./i18n";
 import { defaultProfile, ModelProfile, ModelProvider, PROVIDERS } from "./modelClient";
-import { maskKey } from "./keyPool";
-import { probeKeys } from "./keyProbe";
+import { parseApiKeys } from "./keyPool";
 
 export interface JevTaggerSettings {
 	provider: ModelProvider;
@@ -56,58 +55,8 @@ export class JevTaggerSettingTab extends PluginSettingTab {
 		await this.plugin.saveSettings();
 	}
 
-	/**
-	 * One row per account: the masked key, the health the pool recorded for it,
-	 * and the latency of its last successful answer. Rows are derived from the
-	 * pool, never stored, so a re-render always shows the live state.
-	 */
-	private renderKeyPool(container: HTMLElement, remove: (index: number) => void) {
-		const keys = this.poolKeys();
-		const pool = this.plugin.keyPool;
-		if (!keys.length) {
-			container.createDiv({ cls: "jev-key-empty", text: this.tr("key.pool.empty") });
-			return;
-		}
-		keys.forEach((key, index) => {
-			const state = pool.state(key);
-			const row = container.createDiv({ cls: `jev-key-row is-${state.status}` });
-			let revealed = false;
-			const secret = row.createSpan({ cls: "jev-key-secret", text: maskKey(key) });
-			row.createSpan({
-				cls: "jev-key-status",
-				text: state.latencyMs
-					? `${this.tr(`key.status.${state.status}`)} · ${state.latencyMs}ms`
-					: this.tr(`key.status.${state.status}`),
-			});
-			new Setting(row)
-				.addExtraButton(button => button
-					.setIcon("eye-off")
-					.setTooltip(this.tr("key.pool.reveal"))
-					.onClick(() => {
-						revealed = !revealed;
-						secret.setText(revealed ? key : maskKey(key));
-						button.setIcon(revealed ? "eye" : "eye-off");
-					}))
-				.addExtraButton(button => button
-					.setIcon("trash-2")
-					.setTooltip(this.tr("key.pool.remove"))
-					.onClick(() => remove(index)));
-		});
-		const summary = pool.summary();
-		container.createDiv({
-			cls: "jev-key-summary",
-			text: this.tr("key.pool.summary", {
-				usable: summary.usable,
-				total: summary.total,
-				percent: Math.round(summary.percent * 100),
-				latency: summary.avgLatencyMs,
-			}),
-		});
-	}
-
 	private renderModels(container: HTMLElement) {
 		const tr = (key: TranslationKey, params?: Record<string, string | number>) => t(this.plugin.settings.language, key, params);
-		let checking = false;
 		new Setting(container).setHeading().setName(tr("model.heading")).setDesc(tr("model.desc"));
 		const panel = container.createDiv({ cls: "jev-model-panel" });
 		const activeProvider = this.plugin.settings.provider || "typesafe";
@@ -130,13 +79,11 @@ export class JevTaggerSettingTab extends PluginSettingTab {
 			});
 
 		// 2. Model ID (Editable)
-		let modelInput: HTMLInputElement;
 		const defaultModel = PROVIDERS[activeProvider]?.model || "jev-latest";
 		new Setting(panel)
 			.setName(tr("model.id"))
 			.setDesc(tr("model.idDesc"))
 			.addText(text => {
-				modelInput = text.inputEl;
 				text.setPlaceholder(defaultModel)
 					.setValue(profile.model)
 					.onChange(async value => {
@@ -148,76 +95,196 @@ export class JevTaggerSettingTab extends PluginSettingTab {
 					});
 			});
 
-		// 3. Account pool: one key per account, rotated round-robin
-		new Setting(panel)
-			.setName(tr("key.pool.heading"))
-			.setDesc(tr("key.pool.desc"));
-		const list = panel.createDiv({ cls: "jev-key-pool" });
-		const removeKey = async (index: number) => {
-			await this.setPoolKeys(this.poolKeys().filter((_key, position) => position !== index));
-			this.display();
-		};
-		this.renderKeyPool(list, removeKey);
+		// 3. API Key (supports single key, comma/line separated keys, and expandable batch import)
+		let keyInput: HTMLInputElement;
+		let isRevealed = false;
+		let isBatchOpen = false;
+		const currentKeys = this.poolKeys();
+		const defaultPlaceholder = activeProvider === "openrouter" ? "sk-or-v1-..., sk-or-v2-..." : "apikey_1, apikey_2...";
 
-		let draft = "";
-		const addKey = async () => {
-			const secret = draft.trim();
-			if (!secret) return;
-			if (this.poolKeys().includes(secret)) {
-				new Notice(tr("key.pool.duplicate"));
-				return;
+		const keySetting = new Setting(panel)
+			.setName(tr("model.key"))
+			.setDesc(tr("model.keyDesc"));
+
+		const countHintEl = keySetting.descEl.createDiv({ cls: "jev-key-count-hint" });
+		const updateCountHint = (count: number) => {
+			if (count > 1) {
+				countHintEl.setText(tr("model.keyCount", { count }));
+			} else {
+				countHintEl.setText("");
 			}
-			draft = "";
-			await this.setPoolKeys([...this.poolKeys(), secret]);
-			this.display();
 		};
-		new Setting(panel)
-			.setDesc(tr("key.pool.addDesc"))
+		updateCountHint(currentKeys.length);
+
+		let batchContainer: HTMLElement;
+		let batchTextarea: HTMLTextAreaElement;
+		let batchCountEl: HTMLElement;
+		const updateBatchCount = (count: number) => {
+			if (batchCountEl) {
+				batchCountEl.setText(tr("model.keyCount", { count }));
+			}
+		};
+
+		keySetting
 			.addText(text => {
-				text.inputEl.type = "password";
-				text.inputEl.autocomplete = "off";
-				text.setPlaceholder(activeProvider === "openrouter" ? "sk-or-v1-…" : "apikey_…")
-					.onChange(value => { draft = value; });
-				text.inputEl.addEventListener("keydown", event => {
-					if (event.key === "Enter") addKey();
+				keyInput = text.inputEl;
+				keyInput.type = "password";
+				keyInput.autocomplete = "off";
+				keyInput.spellcheck = false;
+				text.setPlaceholder(defaultPlaceholder)
+					.setValue(currentKeys.join(", "))
+					.onChange(async value => {
+						const parsed = parseApiKeys(value);
+						await this.setPoolKeys(parsed);
+						updateCountHint(parsed.length);
+						if (batchTextarea) batchTextarea.value = parsed.join("\n");
+						updateBatchCount(parsed.length);
+					});
+
+				keyInput.addEventListener("paste", async (e: ClipboardEvent) => {
+					const textData = e.clipboardData?.getData("text");
+					if (textData && (textData.includes("\n") || textData.includes("\r") || textData.includes("，") || textData.includes(","))) {
+						e.preventDefault();
+						const incoming = parseApiKeys(textData);
+						if (incoming.length) {
+							const current = parseApiKeys(keyInput.value);
+							const merged = Array.from(new Set([...current, ...incoming]));
+							keyInput.value = merged.join(", ");
+							if (batchTextarea) batchTextarea.value = merged.join("\n");
+							await this.setPoolKeys(merged);
+							updateCountHint(merged.length);
+							updateBatchCount(merged.length);
+							new Notice(tr("model.keyClipboardImported", { count: incoming.length, total: merged.length }));
+						}
+					}
 				});
 			})
-			.addButton(button => button.setButtonText(tr("key.pool.add")).onClick(addKey));
-
-		// 4. Check every account in the pool
-		const status = panel.createDiv({ cls: "jev-model-status", attr: { role: "status", "aria-live": "polite" } });
-		const keys = this.poolKeys();
-		new Setting(panel)
-			.setDesc(tr("key.pool.checkDesc"))
+			.addExtraButton(button => {
+				button
+					.setIcon("eye-off")
+					.setTooltip(tr("key.pool.reveal"))
+					.onClick(() => {
+						isRevealed = !isRevealed;
+						keyInput.type = isRevealed ? "text" : "password";
+						button.setIcon(isRevealed ? "eye" : "eye-off");
+					});
+			})
 			.addButton(button => {
-				button.setButtonText(tr("key.pool.check")).setCta();
-				button.setDisabled(checking || !keys.length);
-				button.onClick(async () => {
-					checking = true;
-					button.setDisabled(true);
-					status.setText(tr("key.pool.checking", { count: keys.length }));
-					const controller = this.plugin.createController();
-					let failure: unknown = null;
-					try {
-						const served = await probeKeys(this.plugin.activeModel, this.plugin.keyPool, controller.signal);
-						if (served && !this.plugin.activeModel.model.trim()) {
-							this.plugin.activeModel.model = served;
-							if (modelInput) modelInput.value = served;
-							await this.plugin.saveSettings();
+				button
+					.setButtonText(tr("model.keyBatchButton"))
+					.setTooltip(tr("model.keyBatchTitle"))
+					.onClick(() => {
+						isBatchOpen = !isBatchOpen;
+						if (isBatchOpen) {
+							batchContainer.style.display = "block";
+							batchTextarea.value = this.poolKeys().join("\n");
+							updateBatchCount(this.poolKeys().length);
+							batchTextarea.focus();
+							button.setCta();
+						} else {
+							batchContainer.style.display = "none";
+							button.removeCta();
 						}
-					} catch (error) {
-						failure = error;
-					}
-					checking = false;
-					this.plugin.releaseController(controller);
-					if (failure) {
-						status.setText(this.plugin.errorText(failure));
-						button.setDisabled(false);
-						return;
-					}
-					this.display();
-				});
+					});
 			});
+
+		// Expandable batch container
+		batchContainer = panel.createDiv({ cls: "jev-key-batch-container" });
+		batchContainer.style.display = "none";
+
+		const batchHeader = batchContainer.createDiv({ cls: "jev-key-batch-header" });
+		batchHeader.createSpan({ cls: "jev-key-batch-title", text: tr("model.keyBatchTitle") });
+		batchCountEl = batchHeader.createSpan({ cls: "jev-key-batch-count" });
+		updateBatchCount(currentKeys.length);
+
+		batchTextarea = batchContainer.createEl("textarea", {
+			cls: "jev-key-batch-textarea",
+			attr: {
+				rows: "5",
+				placeholder: `sk-...\nsk-...\nsk-...\n(${tr("model.keyBatchPlaceholder")})`,
+				spellcheck: "false",
+			},
+		});
+		batchTextarea.value = currentKeys.join("\n");
+		batchTextarea.addEventListener("input", async () => {
+			const parsed = parseApiKeys(batchTextarea.value);
+			await this.setPoolKeys(parsed);
+			keyInput.value = parsed.join(", ");
+			updateCountHint(parsed.length);
+			updateBatchCount(parsed.length);
+		});
+
+		const batchActions = batchContainer.createDiv({ cls: "jev-key-batch-actions" });
+
+		const pasteBtn = batchActions.createEl("button", {
+			cls: "mod-cta jev-key-batch-btn",
+			text: `📋 ${tr("model.keyBatchPaste")}`,
+		});
+		pasteBtn.onclick = async () => {
+			try {
+				const clipText = await navigator.clipboard.readText();
+				if (!clipText || !clipText.trim()) {
+					new Notice(tr("model.keyClipboardEmpty"));
+					return;
+				}
+				const incoming = parseApiKeys(clipText);
+				if (!incoming.length) {
+					new Notice(tr("model.keyClipboardEmpty"));
+					return;
+				}
+				const existing = parseApiKeys(batchTextarea.value);
+				const merged = Array.from(new Set([...existing, ...incoming]));
+				batchTextarea.value = merged.join("\n");
+				await this.setPoolKeys(merged);
+				keyInput.value = merged.join(", ");
+				updateCountHint(merged.length);
+				updateBatchCount(merged.length);
+				new Notice(tr("model.keyClipboardImported", { count: incoming.length, total: merged.length }));
+			} catch {
+				new Notice(tr("model.keyClipboardError"));
+			}
+		};
+
+		const copyBtn = batchActions.createEl("button", {
+			cls: "jev-key-batch-btn",
+			text: `📑 ${tr("model.keyBatchCopy")}`,
+		});
+		copyBtn.onclick = async () => {
+			const keys = this.poolKeys();
+			if (!keys.length) {
+				new Notice(tr("model.keyEmptyNotice"));
+				return;
+			}
+			try {
+				await navigator.clipboard.writeText(keys.join("\n"));
+				new Notice(tr("model.keyCopiedNotice", { count: keys.length }));
+			} catch {
+				new Notice(tr("model.keyClipboardError"));
+			}
+		};
+
+		const clearBtn = batchActions.createEl("button", {
+			cls: "mod-warning jev-key-batch-btn",
+			text: tr("model.keyBatchClear"),
+		});
+		clearBtn.onclick = async () => {
+			batchTextarea.value = "";
+			await this.setPoolKeys([]);
+			keyInput.value = "";
+			updateCountHint(0);
+			updateBatchCount(0);
+		};
+
+		const closeBtn = batchActions.createEl("button", {
+			cls: "jev-key-batch-btn",
+			text: tr("model.keyBatchClose"),
+		});
+		closeBtn.onclick = () => {
+			isBatchOpen = false;
+			batchContainer.style.display = "none";
+			const batchBtnEl = keySetting.controlEl.querySelector("button:not(.clickable-icon)") as HTMLElement;
+			if (batchBtnEl) batchBtnEl.removeClass("mod-cta");
+		};
 
 		panel.querySelectorAll<HTMLElement>(".setting-item").forEach(row => {
 			const label = row.querySelector(".setting-item-name")?.textContent;
@@ -225,7 +292,42 @@ export class JevTaggerSettingTab extends PluginSettingTab {
 		});
 	}
 
+	private getScrollSnapshots(): Array<{ el: HTMLElement; top: number; left: number }> {
+		const snapshots: Array<{ el: HTMLElement; top: number; left: number }> = [];
+		if (!this.containerEl) return snapshots;
+		let el: HTMLElement | null = this.containerEl;
+		while (el) {
+			if (typeof el.scrollTop === "number" && (el.scrollTop > 0 || el.scrollLeft > 0)) {
+				snapshots.push({ el, top: el.scrollTop, left: el.scrollLeft });
+			}
+			el = el.parentElement;
+		}
+		const tabContent = this.containerEl.closest?.(".vertical-tab-content") as HTMLElement;
+		if (tabContent && !snapshots.some(s => s.el === tabContent) && typeof tabContent.scrollTop === "number") {
+			snapshots.push({ el: tabContent, top: tabContent.scrollTop, left: tabContent.scrollLeft });
+		}
+		return snapshots;
+	}
+
+	private restoreScrollSnapshots(snapshots: Array<{ el: HTMLElement; top: number; left: number }>): void {
+		if (!snapshots.length) return;
+		const apply = () => {
+			for (const { el, top, left } of snapshots) {
+				if (top > 0) el.scrollTop = top;
+				if (left > 0) el.scrollLeft = left;
+			}
+		};
+		apply();
+		if (typeof requestAnimationFrame === "function") {
+			requestAnimationFrame(apply);
+		}
+		if (typeof setTimeout === "function") {
+			setTimeout(apply, 10);
+		}
+	}
+
 	display(): void {
+		const scrollSnapshots = this.getScrollSnapshots();
 		const { containerEl } = this;
 		containerEl.empty();
 		containerEl.addClass("jev-settings-container");
@@ -259,8 +361,6 @@ export class JevTaggerSettingTab extends PluginSettingTab {
 				});
 			});
 
-		this.renderModels(containerEl);
-
 		// Threshold Setting with real-time percentage badge
 		const thresholdSetting = new Setting(containerEl)
 			.setName(t(lang, "settings.threshold.name"))
@@ -284,6 +384,8 @@ export class JevTaggerSettingTab extends PluginSettingTab {
 				})
 		);
 		thresholdSetting.controlEl.prepend(badgeEl);
+
+		this.renderModels(containerEl);
 
 		// 3. Batch Actions & Maintenance
 		new Setting(containerEl).setHeading().setName(t(lang, "settings.section.actions"));
@@ -436,6 +538,8 @@ export class JevTaggerSettingTab extends PluginSettingTab {
 				this.display();
 			};
 		}
+
+		this.restoreScrollSnapshots(scrollSnapshots);
 	}
 }
 

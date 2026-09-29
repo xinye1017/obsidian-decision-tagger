@@ -280,6 +280,8 @@ export class ModelClient {
 				if (failure.code !== "http") throw failure;
 				if (key) this.pool.record(key, classifyStatus(failure.status), Date.now() - started, failure.status);
 				lastError = failure;
+			} finally {
+				if (key) this.pool.release(key);
 			}
 		}
 		if (signal?.aborted) throw new ModelError("cancelled");

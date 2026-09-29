@@ -182,6 +182,45 @@ test('unchanged notes and rescans reset metrics', async () => {
  const api = load(); const { modal } = batch(api, { addTagToFile: async () => false }, ['one.md']);
  await modal.run(); assert.equal(modal.unchanged, 1); assert.equal(modal.modified, 0); await modal.run(); assert.equal(modal.processed, 1); assert.equal(modal.unchanged, 1);
 });
+test('multi-key batch runs parallel workers and distributes load across keys', async () => {
+ const api = load();
+ const pool = new api.KeyPool(['key-1', 'key-2', 'key-3']);
+ let maxInFlight = 0;
+ const activeTasks = new Set();
+ const { modal } = batch(api, {
+  createEvaluationSession: () => ({ client: { profile, pool }, tags: [tag()], threshold: .7 }),
+  evaluateFile: async (file) => {
+   activeTasks.add(file.path);
+   if (activeTasks.size > maxInFlight) maxInFlight = activeTasks.size;
+   await new Promise(resolve => setTimeout(resolve, 20));
+   activeTasks.delete(file.path);
+   return [decision()];
+  }
+ }, ['f1.md', 'f2.md', 'f3.md', 'f4.md', 'f5.md', 'f6.md']);
+ await modal.run();
+ assert.equal(modal.processed, 6);
+ assert.equal(modal.modified, 6);
+ assert.equal(maxInFlight, 3, 'runs 3 workers concurrently with 3 keys');
+ assert.match(modal.modelLabel.text, /3 parallel/);
+});
+test('key pool balances concurrent in-flight requests across distinct accounts', async () => {
+ const api = load();
+ const pool = new api.KeyPool(['key-a', 'key-b', 'key-c']);
+ const k1 = pool.take();
+ const k2 = pool.take();
+ const k3 = pool.take();
+ assert.deepEqual([k1, k2, k3], ['key-a', 'key-b', 'key-c']);
+ assert.equal(pool.activeCount('key-a'), 1);
+ assert.equal(pool.activeCount('key-b'), 1);
+ assert.equal(pool.activeCount('key-c'), 1);
+ pool.release('key-b');
+ assert.equal(pool.activeCount('key-b'), 0);
+ const next = pool.take();
+ assert.equal(next, 'key-b');
+ pool.release('key-a');
+ pool.release('key-b');
+ pool.release('key-c');
+});
 test('frontmatter writes preserve other fields and existing tags, avoid duplicates', async () => {
  const api = load(); const plugin = new api.PluginClass(); const data = { tags: ['old'], title: 'Keep', nested: { key: 1 } };
  plugin.app = { vault: { read: async () => '---\ntitle: Keep\ntags:\n  - old\n---\nbody', modify: async () => {} }, fileManager: { processFrontMatter: async (_file, callback) => callback(data) } };

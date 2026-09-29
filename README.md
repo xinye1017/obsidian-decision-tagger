@@ -1,67 +1,115 @@
 # decision tagger
 
-An Obsidian smart tagging plugin powered by TypeSafe and OpenRouter decision models.
+An intelligent Obsidian tagging plugin powered by System-1 decision models (TypeSafe & OpenRouter) with multi-key parallel classification acceleration.
 
 [简体中文](README_zh.md) · [Releases](https://github.com/xinye1017/obsidian-decision-tagger/releases)
 
-decision tagger classifies notes against your tag rules. Review suggestions, apply recommended tags, or process a folder or your entire vault.
+---
 
-## Features
+**decision tagger** evaluates your notes against customizable decision rules with high precision. It supports instant tag suggestions for active notes, full-vault or scoped batch processing, and multi-key concurrent acceleration to tag thousands of notes in minutes.
 
-- **Visible classification stages:** A single live status line reports reading, evaluation and writing, next to the actual completion percentage, current file, elapsed time, estimated remaining time, scanned notes, added tags and failures. The most recent 100 entries distinguish added tags, unchanged notes and failures.
-- **Compact batch panel:** The scan scope collapses to one line that shows the current scope (the vault name by default) and its note count; open it to browse folders level by level.
-- **Provider Support:** Native support for **TypeSafe** (model `jev-latest`) and **OpenRouter** (model `respan/span-01-lite:free`). Base URLs and models are built-in and fixed, so you only need to enter your API key.
-- **Multi-account key rotation:** One key per account, rotated in order during batch runs. Any non-200 response marks that key on the spot and the request continues on the next account. 401/402/403 accounts drop out of rotation, while a 429 only pauses for its cooldown and returns to the pool afterwards.
-- **Review suggestions:** Recommended tags and other decisions are separated, with match scores, a threshold marker and explanations. Add individually or apply all recommended tags.
-- **Batch classification:** Defaults to the entire vault, or recursively includes Markdown files in a selected folder. The scan scope is picked one level at a time: the list only shows the current level, the breadcrumb walks back up, and every row shows how many notes that choice would scan. Hidden and template paths are excluded. Stop or close the panel to prevent subsequent writes; completed writes remain and progress is not forced to 100%.
-- **Compact tag library:** Import existing vault tags, enable or disable rules individually or in bulk. No built-in default rules. Two columns on desktop, one on narrow screens. The edit dialog renames a tag, and saving applies it across the vault: notes carrying the tag switch to the new name (a tag that only existed inline moves into the YAML), criteria generated from the tag name follow the new name, and hand written criteria stay as they are.
-- **Preserved note data:** Tags are appended through Obsidian `processFrontMatter`, retaining other fields and existing tags without duplicates.
-- **Native themes and language:** Follows Obsidian light/dark themes, with English and Simplified Chinese, keyboard focus and reduced-motion support.
+---
 
-## Model Configuration
+## ✨ Key Features
 
-In **Settings → decision tagger → Model Provider**:
+- **⚡ Multi-Key Parallel Classification Acceleration**
+  - Configure multiple API keys for your provider; the batch runner automatically spins up concurrent workers (up to 8 parallel streams) to dramatically cut down scan time.
+  - **In-flight request load balancing**: New tasks are dynamically dispatched to the key with the fewest active in-flight requests, avoiding single-key saturation and rate limits.
+  - **Automatic error failover & cooldown**: Keys encountering rate limits (`429`) enter a temporary cooldown and resume automatically; dead keys (`401`/`402`/`403`) are safely dropped from active rotation.
 
-1. **Select Provider**: Choose either `TypeSafe` or `OpenRouter`.
-2. **Fixed Base URL & Model**: The base URL and model are preconfigured and fixed (TypeSafe: `https://api.typesafe.ai/v1/systemone` with model `jev-latest`; OpenRouter: `https://openrouter.ai/api/alpha/decisions` with model `respan/span-01-lite:free`), requiring no manual configuration.
-3. **Account Pool**: Add the API key of each account for the selected provider, one account per key. Every row shows the recorded health and latency of that account: 🟢 Healthy (200), 🟡 Rate limited (429, reserved), 🔴 Invalid credentials (401), ⛔ Inference banned (403), 🟣 Quota exhausted (402), ⚪ Unchecked. Keys are masked by default, can be revealed one at a time, and can be removed individually.
-4. **Check All Accounts**: Sends the built-in test request to each account in turn, records availability and latency, and reports the pool as `usable N/M · percent · average latency`. The check never reads note content.
+- **🗂️ Clean Floating Breadcrumb Scope Picker**
+  - Choose between processing the entire vault or targeting specific subdirectories.
+  - Drill down level-by-level with a floating breadcrumb navigation bar without layout shift.
+  - Automatically calculates note counts per directory and skips template/hidden files.
 
-## Processing and data
+- **📊 Real-time Batch Progress & Observability**
+  - Displays real-time progress bar, percentage, elapsed time, and ETA.
+  - When running in parallel, inspects currently active notes in flight and displays concurrency level in the header.
+  - Keeps a scrolling log of the 100 most recent actions (added tags, unchanged notes, and failures).
+  - Clean cancel/stop: Aborts instantly without corrupting notes or leaving partial tags.
 
-1. Extract the title, up to eight headings, the first 450 body characters and the last 260 characters of long notes. Short notes also include folder context. Existing frontmatter and inline tags are removed from the analyzed body.
-2. Send that context and enabled rules to the selected endpoint. Note content is treated as data, not system instructions.
-3. The service returns one `choice` answer per enabled tag. A missing, unknown or malformed answer fails the evaluation without automatic writes. Answers that omit `probabilities` fall back to `choice` and `confidence`.
-4. Automatic application requires a matching decision and a score at or above the threshold. Other decisions remain available for manual application.
+- **🎯 Interactive Single Note Suggestions**
+  - Trigger tag suggestions on the active note or via right-click file context menu.
+  - Categorizes tags into recommended (exceeding confidence threshold) and other decisions.
+  - Add tags individually or apply all recommended tags with one click.
 
-Each batch snapshots its model, rules and threshold at the start. Requests time out after 60 seconds. Network errors, timeouts and cancellation do not rotate to another account (only non-200 responses do). Authentication errors, missing endpoints and rate limits stop the remaining batch; other per-note failures are logged and processing continues. Cancellation discards late responses; Obsidian's request API cannot withdraw requests already sent to the server. A frontmatter write already in progress finishes before further writes stop.
+- **🏷️ Customizable Tag Rule Library & Vault Sync**
+  - Import existing vault tags into your rule library with one click.
+  - Customize questions, match criteria, and exclusions per tag.
+  - **Vault-wide renaming & deletion**: Renaming or deleting a tag in settings can automatically update or clean up frontmatter across all notes in your vault.
 
-API keys are stored in plugin settings. Masking is not encryption. Remote services receive the note context described above. Checking all accounts also spends each account's API quota. Account health and latency live in memory only, so reload the plugin to start from a clean slate.
+- **🛡️ Non-Destructive Frontmatter Updates**
+  - Uses Obsidian's native `processFrontMatter` API to append tags.
+  - Preserves existing YAML fields, body content, and formatting without duplicate tags.
 
-## Installation and development
+- **🎨 Polished UX & In-Place Refresh**
+  - Retains scroll position in settings when switching providers, toggling rules, or updating keys.
+  - Flexible API key input: comma-separated, newline-separated, or via a dedicated batch manager with one-click clipboard paste.
+  - Full dark/light mode integration and native bilingual support (English & Simplified Chinese).
 
-Download `main.js`, `manifest.json` and `styles.css` from [Releases](https://github.com/xinye1017/obsidian-decision-tagger/releases), place them in `<Vault>/.obsidian/plugins/decision-tagger/`, and enable the plugin. Reload the plugin or restart Obsidian after upgrading.
+---
 
+## 🚀 Getting Started
+
+### 1. Installation
+
+#### Option A: Manual Installation
+1. Download `main.js`, `manifest.json`, and `styles.css` from the latest [Release](https://github.com/xinye1017/obsidian-decision-tagger/releases).
+2. Create a folder named `decision-tagger` under your vault's plugin directory: `<Vault>/.obsidian/plugins/decision-tagger/`.
+3. Copy the downloaded files into that folder.
+4. In Obsidian, go to **Settings → Community plugins** and enable **decision tagger**.
+
+#### Option B: Build from Source
 ```sh
+git clone https://github.com/xinye1017/obsidian-decision-tagger.git
+cd obsidian-decision-tagger
 npm install
-npm run check
-npm test
 npm run build
 ```
 
-The repository's existing build script also copies plugin files to `D:/Data/Documents/lixinye/.obsidian/plugins/decision-tagger` without replacing `data.json`. Adjust the target in `esbuild.config.mjs` before building on another computer.
+---
 
-`npm run preview` serves a simulated host at `http://127.0.0.1:4178` using the actual UI source and synthetic data. It accesses no real notes or APIs and does not replace testing inside Obsidian.
+## ⚙️ Configuration
 
-`npm run live` is an opt-in check against a real decision endpoint. It loads the actual `modelClient`/`main` sources with `requestUrl` backed by `fetch`, classifies four synthetic notes against the four built-in tag rules, and asserts the transport contract (endpoint resolution, request fields, authentication header, one decision per enabled tag, probability range). HTTP failures print the raw response body, and tag-quality expectations are reported as warnings instead of failures:
+Open **Settings → decision tagger**:
+
+1. **Model Provider**:
+   - **TypeSafe**: Preconfigured endpoint `https://api.typesafe.ai/v1/systemone` with model `jev-latest`.
+   - **OpenRouter**: Preconfigured endpoint `https://openrouter.ai/api/alpha/decisions` with free decision model `respan/span-01-lite:free` (or your custom decision model ID).
+2. **API Key & Account Pool**:
+   - Enter your API Key directly.
+   - To configure multiple accounts for parallel acceleration, separate keys by commas (`key1, key2`) or click **Batch Import** to paste keys line-by-line from your clipboard.
+3. **Confidence Threshold**:
+   - Adjust the slider (e.g. 70%) to set the minimum probability required for tags to be automatically applied.
+4. **Tag Rules Library**:
+   - Click **Scan Vault Tags** to import existing tags.
+   - Click **Create Tag** or the edit icon to refine decision criteria for any tag.
+
+---
+
+## 💡 How It Works
+
+1. **Context Extraction**: For each note, extracts the title, top 8 headings, the first 450 characters of the body, and the last 260 characters for long notes (short notes include folder context). Frontmatter and existing inline tags are stripped to avoid biasing the model.
+2. **System-1 Decision Architecture**: Sends the structured note context and enabled rules to the decision endpoint as clean data (not prompt injections).
+3. **Evaluation & Writing**:
+   - The decision model scores each enabled tag with a choice and confidence probability.
+   - Matching tags meeting or exceeding your threshold are safely written to the note's frontmatter.
+
+---
+
+## 🛠️ Development & Testing
 
 ```sh
-npm run live -- --mock                       # built-in mock decision service, no credentials
-DECISION_TAGGER_API_KEY=sk-... npm run live -- --endpoint http://127.0.0.1:3000 --model vendor/model-id
+npm install          # Install dependencies
+npm run check        # Run TypeScript type check
+npm test             # Run comprehensive unit test suite
+npm run build        # Build production bundle
+npm run preview      # Launch mock UI preview server at http://127.0.0.1:4178
+npm run live         # Integration test against a live endpoint (optional)
 ```
 
-The purpose is the `POST {model, state, questions} -> {answers}` contract, so it expects a Decision/System-1 service. Chat models reject that endpoint, because they only answer `/v1/chat/completions`.
+---
 
-## License
+## 📄 License
 
 MIT License © 2026 [xinyeli](https://github.com/xinye1017)

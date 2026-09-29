@@ -49,14 +49,24 @@ function classifyStatus(status) {
 function sameKeys(a, b) {
   return a.length === b.length && a.every((key, index) => key === b[index]);
 }
-function maskKey(secret) {
-  if (secret.length <= 8) return secret;
-  return `${secret.slice(0, 6)}\u2026${secret.slice(-4)}`;
+function parseApiKeys(raw) {
+  if (!raw || typeof raw !== "string") return [];
+  const parts = raw.split(/[,，\n\r]+/).map((key) => key.trim()).filter(Boolean);
+  const seen = /* @__PURE__ */ new Set();
+  const result = [];
+  for (const key of parts) {
+    if (!seen.has(key)) {
+      seen.add(key);
+      result.push(key);
+    }
+  }
+  return result;
 }
 var KeyPool = class {
   constructor(keys = [], options = {}) {
     this.keys = keys;
     this.states = /* @__PURE__ */ new Map();
+    this.inFlight = /* @__PURE__ */ new Map();
     this.cursor = 0;
     this.cooldownMs = options.cooldownMs ?? DEFAULT_COOLDOWN_MS;
     this.clock = options.now ?? Date.now;
@@ -68,6 +78,17 @@ var KeyPool = class {
   state(key) {
     return this.states.get(key) ?? freshKeyState();
   }
+  activeCount(key) {
+    return this.inFlight.get(key) ?? 0;
+  }
+  acquire(key) {
+    this.inFlight.set(key, (this.inFlight.get(key) ?? 0) + 1);
+  }
+  release(key) {
+    const count = this.inFlight.get(key) ?? 0;
+    if (count <= 1) this.inFlight.delete(key);
+    else this.inFlight.set(key, count - 1);
+  }
   /** A key serves requests while it is neither parked nor permanently finished. */
   selectable(key) {
     const state = this.state(key);
@@ -76,17 +97,28 @@ var KeyPool = class {
   available() {
     return this.keys.filter((key) => this.selectable(key));
   }
-  /** Next key in rotation order, or undefined when the pool has nothing left to offer. */
+  /**
+   * Selects the next key, prioritizing keys with the fewest active in-flight
+   * requests so parallel workers distribute load evenly across accounts.
+   */
   take() {
+    const selectableKeys = [];
     for (let step = 0; step < this.keys.length; step++) {
       const index = (this.cursor + step) % this.keys.length;
       const key = this.keys[index];
       if (this.selectable(key)) {
-        this.cursor = (index + 1) % this.keys.length;
-        return key;
+        selectableKeys.push({ key, index, active: this.activeCount(key) });
       }
     }
-    return void 0;
+    if (!selectableKeys.length) return void 0;
+    let minActive = selectableKeys[0].active;
+    for (const item of selectableKeys) {
+      if (item.active < minActive) minActive = item.active;
+    }
+    const chosen = selectableKeys.find((item) => item.active === minActive);
+    this.cursor = (chosen.index + 1) % this.keys.length;
+    this.acquire(chosen.key);
+    return chosen.key;
   }
   record(key, status, latencyMs = 0, httpStatus = 0) {
     const state = this.state(key);
@@ -327,6 +359,8 @@ var ModelClient = class {
         if (failure.code !== "http") throw failure;
         if (key) this.pool.record(key, classifyStatus(failure.status), Date.now() - started, failure.status);
         lastError = failure;
+      } finally {
+        if (key) this.pool.release(key);
       }
     }
     if (signal?.aborted) throw new ModelError("cancelled");
@@ -383,6 +417,21 @@ var ModelClient = class {
     return { model: servedModel(data, this.profile.model), probability, inputTokens: Number(data?.usage?.input_tokens ?? data?.usage?.total_tokens) || 0 };
   }
 };
+
+// src/frontmatter.ts
+var FRONTMATTER_BLOCK = /^---[ \t]*\r?\n(?:[\s\S]*?\r?\n)?---[ \t]*(?:\r?\n|$)/;
+function hasFrontmatter(content) {
+  return FRONTMATTER_BLOCK.test(content);
+}
+function splitFrontmatter(content) {
+  const match = FRONTMATTER_BLOCK.exec(content);
+  return match ? { frontmatter: match[0], body: content.slice(match[0].length) } : { frontmatter: "", body: content };
+}
+function withEmptyFrontmatter(content) {
+  if (hasFrontmatter(content)) return content;
+  const eol = content.includes("\r\n") ? "\r\n" : "\n";
+  return `---${eol}---${eol}${content}`;
+}
 
 // src/settings.ts
 var import_obsidian5 = require("obsidian");
@@ -451,7 +500,7 @@ var translations = {
     "tagModal.createTitle": "\u65B0\u5EFA\u6807\u7B7E\u89C4\u5219",
     "tagModal.editTitle": "\u7F16\u8F91\u6807\u7B7E #{tag}",
     "tagModal.name": "\u6807\u7B7E\u540D\u79F0",
-    "tagModal.nameDesc": "\u8981\u5206\u7C7B\u8BC4\u4F30\u7684\u6807\u7B7E\u540D\uFF08\u65E0\u9700\u8F93\u5165 # \u524D\u7F00\uFF0C\u4E0D\u53EF\u5305\u542B\u7A7A\u683C\u6216\u659C\u6760\uFF09\u3002",
+    "tagModal.nameDesc": "\u8981\u5206\u7C7B\u8BC4\u4F30\u7684\u6807\u7B7E\u540D\uFF08\u65E0\u9700\u8F93\u5165 # \u524D\u7F00\uFF0C\u4E0D\u53EF\u5305\u542B\u7A7A\u683C\u6216\u659C\u6760\uFF09\u3002\u6539\u540D\u4F1A\u540C\u6B65\u5E94\u7528\u5230\u5168\u5E93\u3002",
     "tagModal.namePlaceholder": "\u4F8B\u5982\uFF1AAI\u3001\u8BFB\u4E66\u7B14\u8BB0\u3001\u6280\u672F\u67B6\u6784",
     "tagModal.instructions": "\u5224\u5B9A\u95EE\u9898 / \u63D0\u793A\u8BCD",
     "tagModal.instructionsDesc": "\u5F15\u5BFC\u6A21\u578B\u8FDB\u884C\u5224\u5B9A\u7684\u5177\u4F53\u95EE\u9898\u3002\u7559\u7A7A\u5C06\u81EA\u52A8\u6839\u636E\u6807\u7B7E\u540D\u751F\u6210\u9ED8\u8BA4\u5224\u5B9A\u95EE\u9898\u3002",
@@ -470,6 +519,9 @@ var translations = {
     "tagModal.errorDuplicateName": "\u6807\u7B7E #{tag} \u5DF2\u5B58\u5728\u4E8E\u89C4\u5219\u5E93\u4E2D\uFF01",
     "tagModal.createSuccess": "\u5DF2\u6210\u529F\u521B\u5EFA\u6807\u7B7E #{tag}\uFF01",
     "tagModal.editSuccess": "\u5DF2\u6210\u529F\u66F4\u65B0\u6807\u7B7E #{tag} \u7684\u5224\u65AD\u89C4\u5219\uFF01",
+    "tagModal.renameHint": "\u4FDD\u5B58\u540E\u5C06\u540C\u6B65\u628A {notes} \u7BC7\u7B14\u8BB0\u4E2D\u7684\u8BE5\u6807\u7B7E\u6539\u4E3A\u65B0\u540D\u79F0\u3002",
+    "tagModal.renameSuccess": "\u5DF2\u628A #{from} \u6539\u540D\u4E3A #{to}\uFF0C\u5E76\u540C\u6B65\u66F4\u65B0\u4E86 {notes} \u7BC7\u7B14\u8BB0\u3002",
+    "tagModal.errorMissingName": "\u89C4\u5219\u5E93\u4E2D\u627E\u4E0D\u5230\u6807\u7B7E #{tag}\uFF01",
     "tagSuggest.title": "{name}",
     "tagSuggest.loadingSubtitle": "\u6B63\u5728\u901A\u8FC7\u5F53\u524D\u6A21\u578B\u8BC4\u4F30\u5DF2\u542F\u7528\u7684\u6807\u7B7E\u3002",
     "tagSuggest.loading": "AI \u51B3\u7B56\u5206\u6790\u4E2D...",
@@ -502,6 +554,9 @@ var translations = {
     "batch.finishedButton": "\u5B8C\u6210\u5173\u95ED",
     "batch.rescanButton": "\u91CD\u65B0\u626B\u63CF",
     "batch.logStart": "\u5F00\u59CB\u6279\u91CF\u5206\u6790\uFF0C\u8303\u56F4\uFF1A{scope}\uFF0C\u5171 {total} \u7BC7 Markdown \u7B14\u8BB0",
+    "batch.logStartParallel": "\u5F00\u59CB\u6279\u91CF\u5206\u6790\uFF0C\u8303\u56F4\uFF1A{scope}\uFF0C\u5171 {total} \u7BC7\u7B14\u8BB0\uFF08{concurrency} \u7EBF\u7A0B\u5E76\u884C\u52A0\u901F\uFF09",
+    "batch.concurrency": "{count} \u5E76\u53D1",
+    "batch.activeParallel": "\u5E76\u884C\u5206\u6790\u4E2D\uFF08{count} \u7BC7\uFF09\uFF1A{names}",
     "batch.logCancelled": "\u7528\u6237\u4E3B\u52A8\u4E2D\u6B62\u4E86\u6279\u91CF\u6253\u6807\u3002",
     "batch.logCurrentFile": "\u6B63\u5728\u5206\u6790 ({index}/{total}): {path}",
     "batch.logAddedTags": "\u5DF2\u6DFB\u52A0 \xB7 {name} \u2192 {tags}",
@@ -520,6 +575,21 @@ var translations = {
     "model.modelFixedDesc": "\u5F53\u524D\u63D0\u4F9B\u5546\u6307\u5B9A\u7684\u51B3\u7B56\u6A21\u578B\uFF08\u53EF\u81EA\u5B9A\u4E49\uFF09\u3002",
     "model.idDesc": "\u8F93\u5165\u8981\u4F7F\u7528\u7684\u51B3\u7B56\u6A21\u578B ID\uFF0C\u7559\u7A7A\u65F6\u4F7F\u7528\u63D0\u4F9B\u5546\u9ED8\u8BA4\u6A21\u578B\u3002",
     "model.idPlaceholder": "\u7559\u7A7A\u5219\u4F7F\u7528\u9ED8\u8BA4\u6A21\u578B",
+    "model.key": "API Key",
+    "model.keyDesc": "\u8F93\u5165\u5BF9\u5E94\u63D0\u4F9B\u5546\u7684 API Key\uFF0C\u591A\u8D26\u53F7\u652F\u6301\u4EE5\u9017\u53F7\u6216\u6362\u884C\u5206\u9694\uFF0C\u540E\u7AEF\u9047\u9519\u5C06\u81EA\u52A8\u8F6E\u8BE2\u4E0B\u4E00\u4E2A\u53EF\u7528 Key\u3002",
+    "model.keyCount": "\u5DF2\u914D\u7F6E {count} \u4E2A Key\uFF0C\u9047\u9519\u81EA\u52A8\u8F6E\u8BE2",
+    "model.keyBatchButton": "\u6279\u91CF\u5BFC\u5165",
+    "model.keyBatchTitle": "\u6279\u91CF\u5BFC\u5165 / \u7BA1\u7406 API Key\uFF08\u9ED8\u8BA4\u6BCF\u884C\u4E00\u4E2A\uFF09",
+    "model.keyBatchPlaceholder": "\u6BCF\u884C\u8F93\u5165\u6216\u7C98\u8D34\u4E00\u4E2A API Key\uFF0C\u652F\u6301\u4EE5\u6362\u884C\u6216\u9017\u53F7\u5206\u9694",
+    "model.keyBatchPaste": "\u4ECE\u526A\u8D34\u677F\u7C98\u8D34",
+    "model.keyBatchCopy": "\u590D\u5236\u5168\u90E8",
+    "model.keyBatchClear": "\u6E05\u7A7A",
+    "model.keyBatchClose": "\u6536\u8D77",
+    "model.keyClipboardEmpty": "\u526A\u8D34\u677F\u4E2D\u672A\u68C0\u6D4B\u5230\u6709\u6548 API Key \u5185\u5BB9\u3002",
+    "model.keyClipboardImported": "\u5DF2\u4ECE\u526A\u8D34\u677F\u5BFC\u5165 {count} \u4E2A Key\uFF0C\u5F53\u524D\u5171 {total} \u4E2A\u3002",
+    "model.keyCopiedNotice": "\u5DF2\u590D\u5236 {count} \u4E2A Key \u5230\u526A\u8D34\u677F\uFF08\u6BCF\u884C\u4E00\u4E2A\uFF09\u3002",
+    "model.keyEmptyNotice": "\u5F53\u524D\u672A\u914D\u7F6E\u4EFB\u4F55 Key\u3002",
+    "model.keyClipboardError": "\u8BFB\u53D6\u526A\u8D34\u677F\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5\u7CFB\u7EDF\u6743\u9650\u6216\u76F4\u63A5\u5728\u6846\u5185\u7C98\u8D34\u3002",
     "key.pool.heading": "\u8D26\u53F7\u6C60",
     "key.pool.desc": "\u6BCF\u4E2A\u8D26\u53F7\u4E00\u4E2A Key\u3002\u8BF7\u6C42\u6309\u987A\u5E8F\u8F6E\u8BE2\uFF1B\u9047\u5230\u975E 200 \u4F1A\u8DF3\u8FC7\u8BE5 Key \u6362\u4E0B\u4E00\u4E2A\u8D26\u53F7\uFF0C401/402/403 \u7684\u8D26\u53F7\u81EA\u52A8\u9000\u51FA\u8F6E\u8BE2\u3002",
     "key.pool.empty": "\u5C1A\u672A\u6DFB\u52A0\u4EFB\u4F55 Key\u3002",
@@ -623,7 +693,7 @@ var translations = {
     "tagModal.createTitle": "New Tag Rule",
     "tagModal.editTitle": "Edit Tag #{tag}",
     "tagModal.name": "Tag Name",
-    "tagModal.nameDesc": "The tag name to evaluate (without leading #, no spaces or slashes).",
+    "tagModal.nameDesc": "The tag name to evaluate (without leading #, no spaces or slashes). Renaming applies across the vault.",
     "tagModal.namePlaceholder": "e.g. AI, BookNotes, Architecture",
     "tagModal.instructions": "Evaluation Question / Prompt",
     "tagModal.instructionsDesc": "Question to guide the model. Leave empty to auto-generate default question.",
@@ -642,6 +712,9 @@ var translations = {
     "tagModal.errorDuplicateName": "Tag #{tag} already exists in the library!",
     "tagModal.createSuccess": "Successfully created tag #{tag}!",
     "tagModal.editSuccess": "Successfully updated criteria for tag #{tag}!",
+    "tagModal.renameHint": "Saving also applies the new name to the tag in {notes} notes.",
+    "tagModal.renameSuccess": "Renamed #{from} to #{to} and updated {notes} notes.",
+    "tagModal.errorMissingName": "Tag #{tag} is not in the library!",
     "tagSuggest.title": "{name}",
     "tagSuggest.loadingSubtitle": "Evaluating enabled tags with the selected model.",
     "tagSuggest.loading": "Running AI decision analysis...",
@@ -674,6 +747,9 @@ var translations = {
     "batch.finishedButton": "Done",
     "batch.rescanButton": "Rescan",
     "batch.logStart": "Starting batch analysis in {scope} over {total} Markdown notes",
+    "batch.logStartParallel": "Starting batch analysis in {scope} over {total} notes ({concurrency} parallel workers)",
+    "batch.concurrency": "{count} parallel",
+    "batch.activeParallel": "Analyzing in parallel ({count}): {names}",
     "batch.logCancelled": "Batch tagging was cancelled by the user.",
     "batch.logCurrentFile": "Analyzing ({index}/{total}): {path}",
     "batch.logAddedTags": "Added \xB7 {name} \u2192 {tags}",
@@ -692,6 +768,21 @@ var translations = {
     "model.modelFixedDesc": "Decision model specified for this provider (customizable).",
     "model.idDesc": "Decision model ID to use. Leave empty for provider default.",
     "model.idPlaceholder": "Leave empty for default",
+    "model.key": "API Key",
+    "model.keyDesc": "Enter API Key for the selected provider. Multiple keys can be separated by commas or lines; requests rotate to the next key on error.",
+    "model.keyCount": "{count} keys configured (auto-failover rotation)",
+    "model.keyBatchButton": "Batch Import",
+    "model.keyBatchTitle": "Batch Import / Manage API Keys (one per line)",
+    "model.keyBatchPlaceholder": "Enter or paste one API Key per line",
+    "model.keyBatchPaste": "Paste from clipboard",
+    "model.keyBatchCopy": "Copy all",
+    "model.keyBatchClear": "Clear",
+    "model.keyBatchClose": "Collapse",
+    "model.keyClipboardEmpty": "No valid API Keys found in clipboard.",
+    "model.keyClipboardImported": "Imported {count} key(s) from clipboard (total: {total}).",
+    "model.keyCopiedNotice": "Copied {count} key(s) to clipboard (one per line).",
+    "model.keyEmptyNotice": "No keys configured yet.",
+    "model.keyClipboardError": "Failed to access clipboard. Please check permissions or paste directly.",
     "key.pool.heading": "Account Pool",
     "key.pool.desc": "One key per account. Requests rotate in order; a non-200 skips that key and moves to the next account, and 401/402/403 accounts drop out of rotation.",
     "key.pool.empty": "No keys yet.",
@@ -786,6 +877,17 @@ var ScopePicker = class {
     this.path = "";
     this.open = false;
     this.disabled = false;
+    this.onDocClick = (e) => {
+      if (!this.el.contains(e.target)) {
+        this.close();
+      }
+    };
+    this.onDocKeydown = (e) => {
+      if (e.key === "Escape" && this.open) {
+        e.stopPropagation();
+        this.close();
+      }
+    };
     this.el = container.createDiv({ cls: "jev-scope is-collapsed" });
     this.render();
   }
@@ -794,11 +896,19 @@ var ScopePicker = class {
   }
   setDisabled(disabled) {
     this.disabled = disabled;
+    if (disabled) this.close();
     this.el.classList.toggle("is-disabled", disabled);
     this.el.querySelectorAll("button").forEach((button) => {
       button.disabled = disabled;
     });
     this.el.querySelector(".jev-scope-toggle")?.setAttribute("aria-disabled", String(disabled));
+  }
+  close() {
+    if (!this.open) return;
+    this.open = false;
+    document.removeEventListener("click", this.onDocClick);
+    document.removeEventListener("keydown", this.onDocKeydown);
+    this.render();
   }
   tr(key, params) {
     return t(this.language(), key, params);
@@ -818,9 +928,9 @@ var ScopePicker = class {
     this.el.toggleClass("is-collapsed", !this.open);
     this.renderToggle();
     if (!this.open) return;
-    this.el.createDiv({ cls: "jev-scope-desc", text: this.tr("batch.scopeDesc") });
-    this.renderTrail();
-    this.renderList();
+    const dropdown = this.el.createDiv({ cls: "jev-scope-dropdown" });
+    this.renderTrail(dropdown);
+    this.renderList(dropdown);
   }
   renderToggle() {
     const label = this.path || this.app.vault.getName();
@@ -840,8 +950,14 @@ var ScopePicker = class {
     (0, import_obsidian2.setIcon)(toggle.createSpan({ cls: "jev-scope-caret" }), this.open ? "chevron-up" : "chevron-down");
     const flip = () => {
       if (this.disabled) return;
-      this.open = !this.open;
-      this.render();
+      if (this.open) {
+        this.close();
+      } else {
+        this.open = true;
+        document.addEventListener("click", this.onDocClick);
+        document.addEventListener("keydown", this.onDocKeydown);
+        this.render();
+      }
     };
     toggle.onclick = flip;
     toggle.onkeydown = (event) => {
@@ -851,23 +967,22 @@ var ScopePicker = class {
       }
     };
   }
-  renderTrail() {
-    const trail = this.el.createDiv({ cls: "jev-scope-trail" });
-    this.crumb(trail, "", this.tr("batch.scopeAll"), this.path === "");
+  renderTrail(container) {
+    if (!this.path) return;
+    const trail = container.createDiv({ cls: "jev-scope-trail" });
+    this.crumb(trail, "", this.app.vault.getName(), false);
     let prefix = "";
-    for (const segment of this.path.split("/").filter(Boolean)) {
+    const segments = this.path.split("/").filter(Boolean);
+    for (let i = 0; i < segments.length; i++) {
+      const segment = segments[i];
       prefix = prefix ? `${prefix}/${segment}` : segment;
       trail.createSpan({ cls: "jev-scope-sep", text: "/" });
-      this.crumb(trail, prefix, segment, prefix === this.path);
+      const isCurrent = i === segments.length - 1;
+      this.crumb(trail, prefix, segment, isCurrent);
     }
   }
-  renderList() {
-    const list = this.el.createDiv({ cls: "jev-scope-list" });
-    if (this.path) {
-      const up = list.createDiv({ cls: "jev-scope-row" });
-      const parent = this.path.split("/").slice(0, -1).join("/");
-      this.pick(up, "corner-up-left", this.tr("batch.scopeUp"), "", () => this.enter(parent));
-    }
+  renderList(container) {
+    const list = container.createDiv({ cls: "jev-scope-list" });
     const children = this.childFolders();
     if (!children.length) {
       list.createDiv({ cls: "jev-scope-empty", text: this.tr("batch.scopeEmpty") });
@@ -878,8 +993,12 @@ var ScopePicker = class {
     }
   }
   crumb(trail, path, label, current) {
-    const crumb = trail.createEl("button", { cls: `jev-scope-crumb${current ? " is-current" : ""}`, text: label });
-    crumb.onclick = () => this.enter(path);
+    if (current) {
+      trail.createSpan({ cls: "jev-scope-crumb is-current", text: label });
+    } else {
+      const crumb = trail.createEl("button", { cls: "jev-scope-crumb", text: label });
+      crumb.onclick = () => this.enter(path);
+    }
   }
   pick(row, icon, label, meta, onPick) {
     const button = row.createEl("button", { cls: "jev-scope-pick" });
@@ -940,7 +1059,6 @@ var BatchTagModal = class extends import_obsidian3.Modal {
     const header = this.contentEl.createDiv({ cls: "jev-tagger-header" });
     header.createDiv({ cls: "jev-eyebrow", text: "DECISION TAGGER / BATCH" });
     header.createEl("h2", { text: this.tr("batch.title") });
-    header.createDiv({ cls: "jev-tagger-subtitle", text: this.tr("batch.subtitle", { threshold: Math.round(this.plugin.settings.confidenceThreshold * 100) }) });
     this.modelLabel = header.createDiv({ cls: "jev-model-label" });
     this.updateModelLabel();
     this.counts = countNotesByFolder(this.app.vault.getMarkdownFiles().map((file) => file.path));
@@ -956,16 +1074,18 @@ var BatchTagModal = class extends import_obsidian3.Modal {
     );
     this.progress = new ProgressView(this.contentEl, this.plugin.settings.language);
     this.currentFile = this.contentEl.createDiv({ cls: "jev-batch-current-file" });
-    const stats = this.contentEl.createDiv({ cls: "jev-batch-stats" });
+    this.resultsSection = this.contentEl.createDiv({ cls: "jev-batch-results" });
+    this.resultsSection.style.display = "none";
+    const stats = this.resultsSection.createDiv({ cls: "jev-batch-stats" });
     this.metrics = ["batch.statScanned", "batch.statModified", "batch.statAdded", "batch.statFailed"].map((key) => {
       const metric = stats.createDiv({ cls: "jev-stat-card" });
       const value = metric.createDiv({ cls: "jev-stat-num", text: "0" });
       metric.createDiv({ cls: "jev-stat-label", text: this.tr(key) });
       return value;
     });
-    this.detail = this.contentEl.createDiv({ cls: "jev-batch-detail" });
-    this.contentEl.createEl("h3", { text: this.tr("batch.logHeader"), cls: "jev-log-heading" });
-    this.log = this.contentEl.createDiv({ cls: "jev-batch-log", attr: { "aria-label": this.tr("batch.logHeader"), tabindex: "0" } });
+    this.detail = this.resultsSection.createDiv({ cls: "jev-batch-detail" });
+    this.resultsSection.createEl("h3", { text: this.tr("batch.logHeader"), cls: "jev-log-heading" });
+    this.log = this.resultsSection.createDiv({ cls: "jev-batch-log", attr: { "aria-label": this.tr("batch.logHeader"), tabindex: "0" } });
     this.addLog(this.tr("batch.startHint"));
     const footer = this.contentEl.createDiv({ cls: "jev-actions-footer" });
     this.stop = footer.createEl("button", { text: this.tr("batch.close") });
@@ -977,8 +1097,9 @@ var BatchTagModal = class extends import_obsidian3.Modal {
     this.start.onclick = () => this.run();
     this.ready();
   }
-  updateModelLabel() {
-    this.modelLabel.setText(`${this.plugin.activeModel.name} \xB7 ${this.plugin.activeModel.model} \xB7 ${Math.round(this.plugin.settings.confidenceThreshold * 100)}%`);
+  updateModelLabel(concurrency = 1) {
+    const base = `${this.plugin.activeModel.model} \xB7 ${Math.round(this.plugin.settings.confidenceThreshold * 100)}%`;
+    this.modelLabel.setText(concurrency > 1 ? `${base} \xB7 ${this.tr("batch.concurrency", { count: concurrency })}` : base);
   }
   ready() {
     this.counts = countNotesByFolder(this.app.vault.getMarkdownFiles().map((file) => file.path));
@@ -1028,9 +1149,12 @@ var BatchTagModal = class extends import_obsidian3.Modal {
       this.ready();
       return;
     }
+    const availableKeys = session.client.pool ? session.client.pool.available().length : 1;
+    const concurrency = Math.max(1, Math.min(availableKeys, files.length, 8));
     this.ready();
-    this.updateModelLabel();
+    this.updateModelLabel(concurrency);
     this.log.empty();
+    if (this.resultsSection) this.resultsSection.style.display = "";
     this.running = this.plugin.batchRunning = true;
     this.controller = this.plugin.createController();
     const signal = this.controller.signal;
@@ -1038,22 +1162,48 @@ var BatchTagModal = class extends import_obsidian3.Modal {
     this.start.disabled = true;
     this.picker.setDisabled(true);
     this.stop.setText(this.tr("batch.stopButton"));
+    if (concurrency > 1) {
+      const scopeName = this.folder || (this.app.vault.getName ? this.app.vault.getName() : "Vault");
+      this.addLog(this.tr("batch.logStartParallel", { scope: scopeName, total: files.length, concurrency }));
+    }
     const timer = setInterval(() => this.refresh(), 1e3);
-    try {
-      for (const file of files) {
-        if (signal.aborted) break;
-        this.currentFile.setText(file.path);
-        this.currentFile.title = file.path;
+    let nextIndex = 0;
+    const activeFiles = /* @__PURE__ */ new Set();
+    const updateActiveFilesDisplay = () => {
+      if (this.closed) return;
+      if (activeFiles.size === 0) {
+        this.currentFile.setText("");
+        this.currentFile.title = "";
+      } else if (concurrency === 1) {
+        const path = Array.from(activeFiles)[0];
+        this.currentFile.setText(path);
+        this.currentFile.title = path;
+      } else {
+        const names = Array.from(activeFiles).map((p) => {
+          const parts = p.split("/");
+          return parts[parts.length - 1] || p;
+        });
+        this.currentFile.setText(this.tr("batch.activeParallel", { count: activeFiles.size, names: names.join(", ") }));
+        this.currentFile.title = Array.from(activeFiles).join("\n");
+        this.progress.status.setText(this.tr("progress.evaluating"));
+      }
+    };
+    const runWorker = async () => {
+      while (nextIndex < files.length && !signal.aborted) {
+        const file = files[nextIndex++];
+        if (!file || signal.aborted) break;
+        activeFiles.add(file.path);
+        updateActiveFilesDisplay();
         const addedNames = [];
         let finished = false;
         try {
           const results = await this.plugin.evaluateFile(file, session, signal, (stage) => {
             if (this.closed) return;
-            this.progress.status.setText(this.tr(`progress.${stage}`));
+            if (concurrency === 1) this.progress.status.setText(this.tr(`progress.${stage}`));
           });
           if (signal.aborted) break;
           const eligible = results.filter((result) => isEligible(result, session.threshold));
-          this.progress.status.setText(this.tr("progress.writing"));
+          if (concurrency === 1) this.progress.status.setText(this.tr("progress.writing"));
           for (const result of eligible) {
             if (signal.aborted) break;
             if (await this.plugin.addTagToFile(file, result.tagName)) {
@@ -1073,8 +1223,10 @@ var BatchTagModal = class extends import_obsidian3.Modal {
           this.failed++;
           finished = true;
           this.addLog(this.tr("batch.logError", { name: file.basename, error: this.plugin.errorText(error) }), "error");
-          if (error instanceof ModelError && (error.code === "config" || error.code === "quota" || error.code === "http" && [401, 402, 403, 404, 429].includes(error.status))) this.controller.abort();
+          if (error instanceof ModelError && (error.code === "config" || error.code === "quota" || error.code === "http" && [401, 402, 403, 404, 429].includes(error.status))) this.controller?.abort();
         } finally {
+          activeFiles.delete(file.path);
+          updateActiveFilesDisplay();
           if (addedNames.length) {
             this.modified++;
             this.addLog(this.tr("batch.logAddedTags", { name: file.basename, tags: addedNames.map((name) => `#${name}`).join(" \xB7 ") }), "success");
@@ -1083,8 +1235,11 @@ var BatchTagModal = class extends import_obsidian3.Modal {
           this.refresh();
         }
         if (signal.aborted) break;
-        await new Promise((resolve) => setTimeout(resolve, 80));
+        await new Promise((resolve) => setTimeout(resolve, concurrency === 1 ? 80 : 30));
       }
+    };
+    try {
+      await Promise.all(Array.from({ length: concurrency }, () => runWorker()));
     } finally {
       clearInterval(timer);
       this.plugin.releaseController(this.controller);
@@ -1105,6 +1260,7 @@ var BatchTagModal = class extends import_obsidian3.Modal {
   onClose() {
     this.closed = true;
     this.controller?.abort();
+    this.picker?.close();
     this.contentEl.empty();
   }
 };
@@ -1130,15 +1286,19 @@ var TagModal = class extends import_obsidian4.Modal {
     let instructions = this.tag ? this.tag.instructions : "";
     let matchCriteria = this.tag ? this.tag.matchCriteria : "";
     let otherCriteria = this.tag ? this.tag.otherCriteria : "";
+    const affected = isEdit ? this.plugin.notesWithTag(this.tag.name).length : 0;
     const nameSetting = new import_obsidian4.Setting(contentEl).setName(t(lang, "tagModal.name")).setDesc(t(lang, "tagModal.nameDesc"));
     nameSetting.addText((text) => {
       text.setPlaceholder(t(lang, "tagModal.namePlaceholder")).setValue(name).onChange((val) => {
         name = val;
       });
-      if (isEdit) {
-        text.setDisabled(true);
-      }
     });
+    if (isEdit && affected) {
+      nameSetting.settingEl.createDiv({
+        cls: "jev-modal-hint",
+        text: t(lang, "tagModal.renameHint", { notes: affected })
+      });
+    }
     new import_obsidian4.Setting(contentEl).setName(t(lang, "tagModal.instructions")).setDesc(t(lang, "tagModal.instructionsDesc")).addTextArea((ta) => {
       ta.setPlaceholder(t(lang, "tagModal.instructionsPlaceholder")).setValue(instructions).onChange((val) => {
         instructions = val;
@@ -1173,12 +1333,17 @@ var TagModal = class extends import_obsidian4.Modal {
       submitBtn.disabled = true;
       try {
         if (isEdit && this.tag) {
-          await this.plugin.updateTagDefinition(this.tag.name, {
-            instructions,
-            matchCriteria,
-            otherCriteria
-          });
-          new import_obsidian4.Notice(t(lang, "tagModal.editSuccess", { tag: this.tag.name }));
+          const original = this.tag;
+          const renamed = name.replace(/^#/, "").trim();
+          if (original.instructions !== instructions || original.matchCriteria !== matchCriteria || original.otherCriteria !== otherCriteria) {
+            await this.plugin.updateTagDefinition(original.name, { instructions, matchCriteria, otherCriteria });
+          }
+          if (renamed !== original.name) {
+            const result = await this.plugin.renameTag(original.name, renamed);
+            new import_obsidian4.Notice(t(lang, "tagModal.renameSuccess", { from: result.from, to: result.to, notes: result.notes }));
+          } else {
+            new import_obsidian4.Notice(t(lang, "tagModal.editSuccess", { tag: original.name }));
+          }
         } else {
           const cleanName = name.replace(/^#/, "").trim();
           await this.plugin.addTagDefinition({
@@ -1203,26 +1368,6 @@ var TagModal = class extends import_obsidian4.Modal {
     contentEl.empty();
   }
 };
-
-// src/keyProbe.ts
-async function probeKeys(profile, pool, signal) {
-  let servedModel2 = "";
-  for (const key of pool.keys) {
-    if (signal?.aborted) break;
-    const started = Date.now();
-    try {
-      const detected = await new ModelClient(profile, new KeyPool([key])).detect(signal);
-      pool.record(key, "healthy", Date.now() - started, 200);
-      servedModel2 = servedModel2 || detected.model;
-    } catch (error) {
-      const failure = error instanceof ModelError ? error : new ModelError("network");
-      const status = failure.code === "http" ? classifyStatus(failure.status) : "unknown";
-      pool.record(key, status, Date.now() - started, failure.status);
-      if (failure.code === "cancelled") break;
-    }
-  }
-  return servedModel2;
-}
 
 // src/settings.ts
 var DEFAULT_SETTINGS = {
@@ -1255,47 +1400,8 @@ var JevTaggerSettingTab = class extends import_obsidian5.PluginSettingTab {
     this.plugin.settings.apiKeys[this.plugin.settings.provider] = keys;
     await this.plugin.saveSettings();
   }
-  /**
-   * One row per account: the masked key, the health the pool recorded for it,
-   * and the latency of its last successful answer. Rows are derived from the
-   * pool, never stored, so a re-render always shows the live state.
-   */
-  renderKeyPool(container, remove) {
-    const keys = this.poolKeys();
-    const pool = this.plugin.keyPool;
-    if (!keys.length) {
-      container.createDiv({ cls: "jev-key-empty", text: this.tr("key.pool.empty") });
-      return;
-    }
-    keys.forEach((key, index) => {
-      const state = pool.state(key);
-      const row = container.createDiv({ cls: `jev-key-row is-${state.status}` });
-      let revealed = false;
-      const secret = row.createSpan({ cls: "jev-key-secret", text: maskKey(key) });
-      row.createSpan({
-        cls: "jev-key-status",
-        text: state.latencyMs ? `${this.tr(`key.status.${state.status}`)} \xB7 ${state.latencyMs}ms` : this.tr(`key.status.${state.status}`)
-      });
-      new import_obsidian5.Setting(row).addExtraButton((button) => button.setIcon("eye-off").setTooltip(this.tr("key.pool.reveal")).onClick(() => {
-        revealed = !revealed;
-        secret.setText(revealed ? key : maskKey(key));
-        button.setIcon(revealed ? "eye" : "eye-off");
-      })).addExtraButton((button) => button.setIcon("trash-2").setTooltip(this.tr("key.pool.remove")).onClick(() => remove(index)));
-    });
-    const summary = pool.summary();
-    container.createDiv({
-      cls: "jev-key-summary",
-      text: this.tr("key.pool.summary", {
-        usable: summary.usable,
-        total: summary.total,
-        percent: Math.round(summary.percent * 100),
-        latency: summary.avgLatencyMs
-      })
-    });
-  }
   renderModels(container) {
     const tr = (key, params) => t(this.plugin.settings.language, key, params);
-    let checking = false;
     new import_obsidian5.Setting(container).setHeading().setName(tr("model.heading")).setDesc(tr("model.desc"));
     const panel = container.createDiv({ cls: "jev-model-panel" });
     const activeProvider = this.plugin.settings.provider || "typesafe";
@@ -1311,10 +1417,8 @@ var JevTaggerSettingTab = class extends import_obsidian5.PluginSettingTab {
         this.display();
       });
     });
-    let modelInput;
     const defaultModel = PROVIDERS[activeProvider]?.model || "jev-latest";
     new import_obsidian5.Setting(panel).setName(tr("model.id")).setDesc(tr("model.idDesc")).addText((text) => {
-      modelInput = text.inputEl;
       text.setPlaceholder(defaultModel).setValue(profile.model).onChange(async (value) => {
         const val = value.trim();
         profile.model = val;
@@ -1323,72 +1427,210 @@ var JevTaggerSettingTab = class extends import_obsidian5.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian5.Setting(panel).setName(tr("key.pool.heading")).setDesc(tr("key.pool.desc"));
-    const list = panel.createDiv({ cls: "jev-key-pool" });
-    const removeKey = async (index) => {
-      await this.setPoolKeys(this.poolKeys().filter((_key, position) => position !== index));
-      this.display();
-    };
-    this.renderKeyPool(list, removeKey);
-    let draft = "";
-    const addKey = async () => {
-      const secret = draft.trim();
-      if (!secret) return;
-      if (this.poolKeys().includes(secret)) {
-        new import_obsidian5.Notice(tr("key.pool.duplicate"));
-        return;
+    let keyInput;
+    let isRevealed = false;
+    let isBatchOpen = false;
+    const currentKeys = this.poolKeys();
+    const defaultPlaceholder = activeProvider === "openrouter" ? "sk-or-v1-..., sk-or-v2-..." : "apikey_1, apikey_2...";
+    const keySetting = new import_obsidian5.Setting(panel).setName(tr("model.key")).setDesc(tr("model.keyDesc"));
+    const countHintEl = keySetting.descEl.createDiv({ cls: "jev-key-count-hint" });
+    const updateCountHint = (count) => {
+      if (count > 1) {
+        countHintEl.setText(tr("model.keyCount", { count }));
+      } else {
+        countHintEl.setText("");
       }
-      draft = "";
-      await this.setPoolKeys([...this.poolKeys(), secret]);
-      this.display();
     };
-    new import_obsidian5.Setting(panel).setDesc(tr("key.pool.addDesc")).addText((text) => {
-      text.inputEl.type = "password";
-      text.inputEl.autocomplete = "off";
-      text.setPlaceholder(activeProvider === "openrouter" ? "sk-or-v1-\u2026" : "apikey_\u2026").onChange((value) => {
-        draft = value;
+    updateCountHint(currentKeys.length);
+    let batchContainer;
+    let batchTextarea;
+    let batchCountEl;
+    const updateBatchCount = (count) => {
+      if (batchCountEl) {
+        batchCountEl.setText(tr("model.keyCount", { count }));
+      }
+    };
+    keySetting.addText((text) => {
+      keyInput = text.inputEl;
+      keyInput.type = "password";
+      keyInput.autocomplete = "off";
+      keyInput.spellcheck = false;
+      text.setPlaceholder(defaultPlaceholder).setValue(currentKeys.join(", ")).onChange(async (value) => {
+        const parsed = parseApiKeys(value);
+        await this.setPoolKeys(parsed);
+        updateCountHint(parsed.length);
+        if (batchTextarea) batchTextarea.value = parsed.join("\n");
+        updateBatchCount(parsed.length);
       });
-      text.inputEl.addEventListener("keydown", (event) => {
-        if (event.key === "Enter") addKey();
-      });
-    }).addButton((button) => button.setButtonText(tr("key.pool.add")).onClick(addKey));
-    const status = panel.createDiv({ cls: "jev-model-status", attr: { role: "status", "aria-live": "polite" } });
-    const keys = this.poolKeys();
-    new import_obsidian5.Setting(panel).setDesc(tr("key.pool.checkDesc")).addButton((button) => {
-      button.setButtonText(tr("key.pool.check")).setCta();
-      button.setDisabled(checking || !keys.length);
-      button.onClick(async () => {
-        checking = true;
-        button.setDisabled(true);
-        status.setText(tr("key.pool.checking", { count: keys.length }));
-        const controller = this.plugin.createController();
-        let failure = null;
-        try {
-          const served = await probeKeys(this.plugin.activeModel, this.plugin.keyPool, controller.signal);
-          if (served && !this.plugin.activeModel.model.trim()) {
-            this.plugin.activeModel.model = served;
-            if (modelInput) modelInput.value = served;
-            await this.plugin.saveSettings();
+      keyInput.addEventListener("paste", async (e) => {
+        const textData = e.clipboardData?.getData("text");
+        if (textData && (textData.includes("\n") || textData.includes("\r") || textData.includes("\uFF0C") || textData.includes(","))) {
+          e.preventDefault();
+          const incoming = parseApiKeys(textData);
+          if (incoming.length) {
+            const current = parseApiKeys(keyInput.value);
+            const merged = Array.from(/* @__PURE__ */ new Set([...current, ...incoming]));
+            keyInput.value = merged.join(", ");
+            if (batchTextarea) batchTextarea.value = merged.join("\n");
+            await this.setPoolKeys(merged);
+            updateCountHint(merged.length);
+            updateBatchCount(merged.length);
+            new import_obsidian5.Notice(tr("model.keyClipboardImported", { count: incoming.length, total: merged.length }));
           }
-        } catch (error) {
-          failure = error;
         }
-        checking = false;
-        this.plugin.releaseController(controller);
-        if (failure) {
-          status.setText(this.plugin.errorText(failure));
-          button.setDisabled(false);
-          return;
+      });
+    }).addExtraButton((button) => {
+      button.setIcon("eye-off").setTooltip(tr("key.pool.reveal")).onClick(() => {
+        isRevealed = !isRevealed;
+        keyInput.type = isRevealed ? "text" : "password";
+        button.setIcon(isRevealed ? "eye" : "eye-off");
+      });
+    }).addButton((button) => {
+      button.setButtonText(tr("model.keyBatchButton")).setTooltip(tr("model.keyBatchTitle")).onClick(() => {
+        isBatchOpen = !isBatchOpen;
+        if (isBatchOpen) {
+          batchContainer.style.display = "block";
+          batchTextarea.value = this.poolKeys().join("\n");
+          updateBatchCount(this.poolKeys().length);
+          batchTextarea.focus();
+          button.setCta();
+        } else {
+          batchContainer.style.display = "none";
+          button.removeCta();
         }
-        this.display();
       });
     });
+    batchContainer = panel.createDiv({ cls: "jev-key-batch-container" });
+    batchContainer.style.display = "none";
+    const batchHeader = batchContainer.createDiv({ cls: "jev-key-batch-header" });
+    batchHeader.createSpan({ cls: "jev-key-batch-title", text: tr("model.keyBatchTitle") });
+    batchCountEl = batchHeader.createSpan({ cls: "jev-key-batch-count" });
+    updateBatchCount(currentKeys.length);
+    batchTextarea = batchContainer.createEl("textarea", {
+      cls: "jev-key-batch-textarea",
+      attr: {
+        rows: "5",
+        placeholder: `sk-...
+sk-...
+sk-...
+(${tr("model.keyBatchPlaceholder")})`,
+        spellcheck: "false"
+      }
+    });
+    batchTextarea.value = currentKeys.join("\n");
+    batchTextarea.addEventListener("input", async () => {
+      const parsed = parseApiKeys(batchTextarea.value);
+      await this.setPoolKeys(parsed);
+      keyInput.value = parsed.join(", ");
+      updateCountHint(parsed.length);
+      updateBatchCount(parsed.length);
+    });
+    const batchActions = batchContainer.createDiv({ cls: "jev-key-batch-actions" });
+    const pasteBtn = batchActions.createEl("button", {
+      cls: "mod-cta jev-key-batch-btn",
+      text: `\u{1F4CB} ${tr("model.keyBatchPaste")}`
+    });
+    pasteBtn.onclick = async () => {
+      try {
+        const clipText = await navigator.clipboard.readText();
+        if (!clipText || !clipText.trim()) {
+          new import_obsidian5.Notice(tr("model.keyClipboardEmpty"));
+          return;
+        }
+        const incoming = parseApiKeys(clipText);
+        if (!incoming.length) {
+          new import_obsidian5.Notice(tr("model.keyClipboardEmpty"));
+          return;
+        }
+        const existing = parseApiKeys(batchTextarea.value);
+        const merged = Array.from(/* @__PURE__ */ new Set([...existing, ...incoming]));
+        batchTextarea.value = merged.join("\n");
+        await this.setPoolKeys(merged);
+        keyInput.value = merged.join(", ");
+        updateCountHint(merged.length);
+        updateBatchCount(merged.length);
+        new import_obsidian5.Notice(tr("model.keyClipboardImported", { count: incoming.length, total: merged.length }));
+      } catch {
+        new import_obsidian5.Notice(tr("model.keyClipboardError"));
+      }
+    };
+    const copyBtn = batchActions.createEl("button", {
+      cls: "jev-key-batch-btn",
+      text: `\u{1F4D1} ${tr("model.keyBatchCopy")}`
+    });
+    copyBtn.onclick = async () => {
+      const keys = this.poolKeys();
+      if (!keys.length) {
+        new import_obsidian5.Notice(tr("model.keyEmptyNotice"));
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(keys.join("\n"));
+        new import_obsidian5.Notice(tr("model.keyCopiedNotice", { count: keys.length }));
+      } catch {
+        new import_obsidian5.Notice(tr("model.keyClipboardError"));
+      }
+    };
+    const clearBtn = batchActions.createEl("button", {
+      cls: "mod-warning jev-key-batch-btn",
+      text: tr("model.keyBatchClear")
+    });
+    clearBtn.onclick = async () => {
+      batchTextarea.value = "";
+      await this.setPoolKeys([]);
+      keyInput.value = "";
+      updateCountHint(0);
+      updateBatchCount(0);
+    };
+    const closeBtn = batchActions.createEl("button", {
+      cls: "jev-key-batch-btn",
+      text: tr("model.keyBatchClose")
+    });
+    closeBtn.onclick = () => {
+      isBatchOpen = false;
+      batchContainer.style.display = "none";
+      const batchBtnEl = keySetting.controlEl.querySelector("button:not(.clickable-icon)");
+      if (batchBtnEl) batchBtnEl.removeClass("mod-cta");
+    };
     panel.querySelectorAll(".setting-item").forEach((row) => {
       const label = row.querySelector(".setting-item-name")?.textContent;
       if (label) row.querySelectorAll("input, select").forEach((control) => control.setAttribute("aria-label", label));
     });
   }
+  getScrollSnapshots() {
+    const snapshots = [];
+    if (!this.containerEl) return snapshots;
+    let el = this.containerEl;
+    while (el) {
+      if (typeof el.scrollTop === "number" && (el.scrollTop > 0 || el.scrollLeft > 0)) {
+        snapshots.push({ el, top: el.scrollTop, left: el.scrollLeft });
+      }
+      el = el.parentElement;
+    }
+    const tabContent = this.containerEl.closest?.(".vertical-tab-content");
+    if (tabContent && !snapshots.some((s) => s.el === tabContent) && typeof tabContent.scrollTop === "number") {
+      snapshots.push({ el: tabContent, top: tabContent.scrollTop, left: tabContent.scrollLeft });
+    }
+    return snapshots;
+  }
+  restoreScrollSnapshots(snapshots) {
+    if (!snapshots.length) return;
+    const apply = () => {
+      for (const { el, top, left } of snapshots) {
+        if (top > 0) el.scrollTop = top;
+        if (left > 0) el.scrollLeft = left;
+      }
+    };
+    apply();
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(apply);
+    }
+    if (typeof setTimeout === "function") {
+      setTimeout(apply, 10);
+    }
+  }
   display() {
+    const scrollSnapshots = this.getScrollSnapshots();
     const { containerEl } = this;
     containerEl.empty();
     containerEl.addClass("jev-settings-container");
@@ -1411,7 +1653,6 @@ var JevTaggerSettingTab = class extends import_obsidian5.PluginSettingTab {
         this.display();
       });
     });
-    this.renderModels(containerEl);
     const thresholdSetting = new import_obsidian5.Setting(containerEl).setName(t(lang, "settings.threshold.name")).setDesc(t(lang, "settings.threshold.desc"));
     const currentPct = Math.round(this.plugin.settings.confidenceThreshold * 100);
     const badgeEl = thresholdSetting.controlEl.createSpan({
@@ -1426,6 +1667,7 @@ var JevTaggerSettingTab = class extends import_obsidian5.PluginSettingTab {
       })
     );
     thresholdSetting.controlEl.prepend(badgeEl);
+    this.renderModels(containerEl);
     new import_obsidian5.Setting(containerEl).setHeading().setName(t(lang, "settings.section.actions"));
     new import_obsidian5.Setting(containerEl).setName(t(lang, "settings.batch.name")).setDesc(t(lang, "settings.batch.desc")).addButton(
       (btn) => btn.setButtonText(t(lang, "settings.batch.button")).setCta().onClick(() => {
@@ -1538,6 +1780,7 @@ var JevTaggerSettingTab = class extends import_obsidian5.PluginSettingTab {
         this.display();
       };
     }
+    this.restoreScrollSnapshots(scrollSnapshots);
   }
 };
 var DeleteTagConfirmModal = class extends import_obsidian5.Modal {
@@ -1939,8 +2182,7 @@ var JevTaggerPlugin = class extends import_obsidian7.Plugin {
    * Extracts clean state for Jev System-1 model evaluation
    */
   async buildNoteState(file) {
-    const rawContent = await this.app.vault.read(file);
-    let text = rawContent.replace(/^---[\s\S]*?---\s*/, "");
+    let text = splitFrontmatter(await this.app.vault.read(file)).body.trim();
     text = text.replace(/(^|\s)#[^\s#]+/g, "$1").trim();
     const title = file.basename;
     const introduction = text.slice(0, 450);
@@ -2012,9 +2254,18 @@ var JevTaggerPlugin = class extends import_obsidian7.Plugin {
     }
   }
   /**
-   * Safely adds tag to frontmatter using Obsidian's processFrontMatter API
+   * Adds a tag to the YAML frontmatter using Obsidian's processFrontMatter.
+   *
+   * The empty block is created first on purpose: processFrontMatter writes
+   * properties as plain body text into a file that has no frontmatter yet, so
+   * without it a tag on such a note lands in the note instead of in the YAML.
    */
   async addTagToFile(file, newTag) {
+    const tag = newTag.replace(/^#/, "").trim();
+    if (!tag) return false;
+    const content = await this.app.vault.read(file);
+    const ready = withEmptyFrontmatter(content);
+    if (ready !== content) await this.app.vault.modify(file, ready);
     let modified = false;
     await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
       let currentTags = [];
@@ -2025,8 +2276,8 @@ var JevTaggerPlugin = class extends import_obsidian7.Plugin {
           currentTags = frontmatter.tags.split(/[\s,]+/).map((t2) => t2.replace(/^#/, ""));
         }
       }
-      if (!currentTags.includes(newTag)) {
-        currentTags.push(newTag);
+      if (!currentTags.includes(tag)) {
+        currentTags.push(tag);
         modified = true;
       }
       frontmatter.tags = currentTags;
@@ -2034,12 +2285,36 @@ var JevTaggerPlugin = class extends import_obsidian7.Plugin {
     return modified;
   }
   /**
-   * Safely removes a tag from frontmatter (and inline content) using Obsidian APIs
+   * Removes a tag from the frontmatter and from the note body.
+   *
+   * The body is cleaned first and the frontmatter second, so the inline edit
+   * always runs against the content that was just read. processFrontMatter is
+   * only called for files that really have a block: on a file without one it
+   * would write properties as plain body text, which is the mirror image of
+   * the bug addTagToFile guards against.
    */
   async removeTagFromFile(file, tagToRemove) {
     let modified = false;
     const cleanTag = tagToRemove.replace(/^#/, "").trim();
-    if (this.app.fileManager?.processFrontMatter) {
+    if (!cleanTag) return false;
+    if (this.app.vault?.read && this.app.vault?.modify) {
+      try {
+        const { frontmatter, body } = splitFrontmatter(await this.app.vault.read(file));
+        const escaped = cleanTag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const inlineRegex = new RegExp(`(^|\\s)#${escaped}(?=[\\s,\uFF0C.\u3002!\uFF01?\uFF1F:\uFF1A;\uFF1B"'\`\\]\\)\\>\\<]|$)(?!\\/)`, "g");
+        if (inlineRegex.test(body)) {
+          const updatedBody = body.replace(inlineRegex, (match, prefix) => {
+            return prefix.includes("\n") ? prefix : "";
+          });
+          if (updatedBody !== body) {
+            await this.app.vault.modify(file, frontmatter + updatedBody);
+            modified = true;
+          }
+        }
+      } catch {
+      }
+    }
+    if (this.app.fileManager?.processFrontMatter && await this.hasFrontmatterBlock(file)) {
       await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
         if (!frontmatter) return;
         if (frontmatter.tags) {
@@ -2072,27 +2347,66 @@ var JevTaggerPlugin = class extends import_obsidian7.Plugin {
         }
       });
     }
-    if (this.app.vault?.read && this.app.vault?.modify) {
-      try {
-        const content = await this.app.vault.read(file);
-        const frontmatterMatch = content.match(/^---[\s\S]*?---\r?\n?/);
-        const frontmatterPart = frontmatterMatch ? frontmatterMatch[0] : "";
-        const bodyPart = content.slice(frontmatterPart.length);
-        const escaped = cleanTag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        const inlineRegex = new RegExp(`(^|\\s)#${escaped}(?=[\\s,\uFF0C.\u3002!\uFF01?\uFF1F:\uFF1A;\uFF1B"'\`\\]\\)\\>\\<]|$)(?!\\/)`, "g");
-        if (inlineRegex.test(bodyPart)) {
-          const updatedBody = bodyPart.replace(inlineRegex, (match, prefix) => {
-            return prefix.includes("\n") ? prefix : "";
-          });
-          if (updatedBody !== bodyPart) {
-            await this.app.vault.modify(file, frontmatterPart + updatedBody);
-            modified = true;
-          }
-        }
-      } catch {
-      }
-    }
     return modified;
+  }
+  async hasFrontmatterBlock(file) {
+    return this.app.vault?.read ? splitFrontmatter(await this.app.vault.read(file)).frontmatter !== "" : false;
+  }
+  /**
+   * Notes whose metadata cache actually reports the tag, whether it sits in the
+   * frontmatter or inline in the body. A note the cache knows nothing about is
+   * never reported: guessing would add the tag to notes that never had it.
+   */
+  notesWithTag(tag) {
+    const cleanTag = tag.replace(/^#/, "").trim();
+    return this.app.vault.getMarkdownFiles().filter((file) => {
+      const cache = this.app.metadataCache?.getFileCache ? this.app.metadataCache.getFileCache(file) : null;
+      if (!cache) return false;
+      return ((0, import_obsidian7.getAllTags)(cache) || []).some(
+        (found) => (typeof found === "string" ? found : found?.tag || "").replace(/^#/, "").trim() === cleanTag
+      );
+    });
+  }
+  /**
+   * Renames a tag and applies it in one go: the library rule and every note
+   * that carried the old name end up on the new one. Notes that only had the
+   * tag inline lose it there and gain it in the frontmatter, which is where
+   * this plugin keeps tags.
+   *
+   * Criteria that were generated from the old name are regenerated, so the
+   * model is not asked about a topic that no longer exists; criteria that were
+   * written by hand are left untouched.
+   */
+  async renameTag(from, to) {
+    const oldName = from.replace(/^#/, "").trim();
+    const newName = to.replace(/^#/, "").trim();
+    if (!newName) throw new Error(this.tr("tagModal.errorEmptyName"));
+    if (/\s|\//.test(newName)) throw new Error(this.tr("tagModal.errorInvalidName"));
+    if (newName === oldName) return { notes: 0, from: oldName, to: newName };
+    const target = this.settings.tags.find((tag) => tag.name === oldName);
+    if (!target) throw new Error(this.tr("tagModal.errorMissingName", { tag: oldName }));
+    if (this.settings.tags.some((tag) => tag.name.toLowerCase() === newName.toLowerCase())) {
+      throw new Error(this.tr("tagModal.errorDuplicateName", { tag: newName }));
+    }
+    const notes = this.notesWithTag(oldName);
+    for (const file of notes) {
+      await this.removeTagFromFile(file, oldName);
+      await this.addTagToFile(file, newName);
+    }
+    const generated = this.generatedCriteria(target, oldName, newName);
+    if (generated) Object.assign(target, generated);
+    target.name = newName;
+    await this.saveSettings();
+    return { notes: notes.length, from: oldName, to: newName };
+  }
+  /** The two rule shapes this plugin generates for a tag name, in either UI language. */
+  generatedCriteria(tag, oldName, newName) {
+    const patterns = [
+      (name) => ({ instructions: `Is this note primarily about ${name}?`, matchCriteria: `${name} and related topics.`, otherCriteria: "Other topics." }),
+      (name) => ({ instructions: `\u8FD9\u7BC7\u7B14\u8BB0\u662F\u5426\u4E3B\u8981\u5173\u4E8E ${name}\uFF1F`, matchCriteria: `${name} \u53CA\u76F8\u5173\u4E3B\u9898\u3002`, otherCriteria: "\u5176\u4ED6\u4E3B\u9898\u3002" })
+    ];
+    const generated = patterns.find((pattern) => pattern(oldName).instructions === tag.instructions);
+    return generated ? generated(newName) : null;
   }
   /**
    * Removes a tag from all notes across the vault and deletes it from the tag library
@@ -2100,16 +2414,10 @@ var JevTaggerPlugin = class extends import_obsidian7.Plugin {
   async removeTagFromVault(tagName) {
     const cleanTag = tagName.replace(/^#/, "").trim();
     const files = this.app.vault.getMarkdownFiles ? this.app.vault.getMarkdownFiles() : [];
+    const carrying = new Set(this.notesWithTag(cleanTag).map((file) => file.path));
     let affectedNotes = 0;
     for (const file of files) {
-      const cache = this.app.metadataCache?.getFileCache ? this.app.metadataCache.getFileCache(file) : null;
-      let hasTag = false;
-      if (cache) {
-        const tags = (0, import_obsidian7.getAllTags)(cache) || [];
-        hasTag = tags.some((t2) => (typeof t2 === "string" ? t2 : t2?.tag || "").replace(/^#/, "").trim() === cleanTag);
-      } else {
-        hasTag = true;
-      }
+      const hasTag = carrying.has(file.path) || !this.app.metadataCache?.getFileCache?.(file);
       if (hasTag) {
         const modified = await this.removeTagFromFile(file, cleanTag);
         if (modified) affectedNotes++;

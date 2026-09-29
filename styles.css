@@ -17,20 +17,20 @@
 .jev-native-progress:indeterminate::-webkit-progress-bar { background: transparent; }
 @keyframes jev-pending { to { background-position: -200% 0; } }
 .jev-batch-current-file { color: var(--text-muted); font-size: 12px; margin: 8px 0 0; min-height: 18px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.jev-scope { margin-bottom: 12px; }
+.jev-scope { position: relative; margin-bottom: 12px; }
 .jev-scope-toggle { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 4px 10px; border: 1px solid var(--background-modifier-border); border-radius: 8px; cursor: pointer; }
 .jev-scope-toggle:hover { background: var(--background-modifier-hover); }
 .jev-scope-toggle .svg-icon { color: var(--text-muted); flex: 0 0 auto; }
 .jev-scope-caret { display: inline-flex; margin-left: auto; color: var(--text-muted); }
-.jev-scope-desc { color: var(--text-muted); font-size: 12px; line-height: 1.5; margin: 8px 0 6px; }
-.jev-scope-trail { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-bottom: 6px; font-size: 12px; }
+.jev-scope-dropdown { position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: var(--layer-menu, 100); background: var(--background-primary); border: 1px solid var(--background-modifier-border); border-radius: 8px; box-shadow: var(--shadow-s, 0 6px 18px rgba(0, 0, 0, 0.25)); padding: 6px; }
+.jev-scope-trail { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 4px 6px 8px; border-bottom: 1px solid var(--background-modifier-border); margin-bottom: 4px; font-size: 12px; }
 .jev-scope-crumb { padding: 2px 6px; border-radius: 4px; background: transparent; box-shadow: none; color: var(--text-muted); font-size: 12px; }
 .jev-scope-crumb:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
 .jev-scope-crumb.is-current { color: var(--text-normal); font-weight: 600; }
 .jev-scope-sep { color: var(--text-faint); }
-.jev-scope-list { max-height: 150px; overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--background-modifier-border); border-radius: 8px; }
+.jev-scope-list { max-height: 180px; overflow-y: auto; overscroll-behavior: contain; border-radius: 6px; }
 .jev-scope-row + .jev-scope-row { border-top: 1px solid var(--background-modifier-border); }
-.jev-scope-pick { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 30px; padding: 4px 10px; border: 0; border-radius: 0; background: transparent; box-shadow: none; text-align: left; }
+.jev-scope-pick { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 30px; padding: 4px 8px; border: 0; border-radius: 4px; background: transparent; box-shadow: none; text-align: left; }
 .jev-scope-pick:hover { background: var(--background-modifier-hover); }
 .jev-scope-pick .svg-icon { color: var(--text-muted); flex: 0 0 auto; }
 .jev-scope-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -75,27 +75,22 @@
 .jev-settings-container { padding-bottom: 24px; container-type: inline-size; }
 .jev-settings-header { margin-bottom: 20px; padding-bottom: 12px; border-bottom: 1px solid var(--background-modifier-border); }
 .jev-settings-header h2 { margin-bottom: 6px; }
-.jev-model-panel { border: 1px solid var(--background-modifier-border); border-radius: 10px; padding: 0 16px; margin-bottom: 24px; }
+.jev-model-panel { margin-bottom: 24px; }
 .jev-model-panel .setting-item { gap: 16px; }
 .jev-model-panel .setting-item-info { min-width: 0; }
-.jev-model-panel .setting-item-control { flex: 0 1 52%; flex-wrap: nowrap; justify-content: flex-end; }
+.jev-model-panel .setting-item-control { flex: 0 1 62%; flex-wrap: nowrap; justify-content: flex-end; gap: 8px; }
 .jev-model-panel select { max-width: 100%; text-overflow: ellipsis; }
-.jev-model-panel .setting-item:last-child .setting-item-control { flex-wrap: wrap; }
 .jev-model-panel input[type=text], .jev-model-panel input[type=password] { width: 100%; min-width: 0; font-family: var(--font-monospace); font-size: 12px; }
-.jev-model-status { font-size: 12px; line-height: 1.6; color: var(--text-muted); overflow-wrap: anywhere; }
-.jev-model-status:empty { display: none; }
-.jev-key-pool { display: flex; flex-direction: column; gap: 2px; padding: 10px 0; }
-.jev-key-row { display: flex; align-items: center; gap: 10px; min-height: 34px; border-bottom: 1px solid var(--background-modifier-border); }
-.jev-key-row:last-of-type { border-bottom: 0; }
-.jev-key-row .setting-item { border: 0; padding: 0; margin-left: auto; }
-.jev-key-row .setting-item-info { display: none; }
-.jev-key-secret { font-family: var(--font-monospace); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.jev-key-status { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
-.jev-key-row.is-healthy .jev-key-status { color: var(--text-success, var(--text-accent)); }
-.jev-key-row.is-limited .jev-key-status { color: var(--text-warning); }
-.jev-key-row.is-invalid .jev-key-secret, .jev-key-row.is-banned .jev-key-secret, .jev-key-row.is-exhausted .jev-key-secret { text-decoration: line-through; opacity: 0.55; }
-.jev-key-empty { padding: 10px 0; font-size: 12px; color: var(--text-muted); }
-.jev-key-summary { padding-top: 10px; font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.jev-key-count-hint { font-size: 12px; color: var(--text-accent); margin-top: 4px; }
+.jev-key-count-hint:empty { display: none; }
+.jev-key-batch-container { margin: 8px 0 16px; padding: 12px 14px; background: var(--background-secondary); border: 1px solid var(--background-modifier-border); border-radius: 8px; }
+.jev-key-batch-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 12px; color: var(--text-muted); }
+.jev-key-batch-title { font-weight: 500; }
+.jev-key-batch-count { font-size: 11px; color: var(--text-accent); }
+.jev-key-batch-textarea { width: 100%; min-height: 110px; resize: vertical; font-family: var(--font-monospace); font-size: 12px; line-height: 1.5; padding: 8px 10px; background: var(--background-primary); border: 1px solid var(--background-modifier-border); border-radius: 6px; color: var(--text-normal); }
+.jev-key-batch-textarea:focus { border-color: var(--interactive-accent); outline: none; }
+.jev-key-batch-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+.jev-key-batch-btn { font-size: 12px; padding: 4px 10px; }
 .jev-threshold-badge { color: var(--text-accent); font-size: 13px; font-variant-numeric: tabular-nums; font-weight: 600; min-width: 40px; }
 .jev-tag-toolbar { display: flex; justify-content: space-between; flex-wrap: wrap; align-items: center; gap: 10px; margin: 14px 0; }
 .jev-tag-stats { color: var(--text-muted); font-size: 12px; }

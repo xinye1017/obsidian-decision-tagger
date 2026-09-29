@@ -69,8 +69,27 @@ export function maskKey(secret: string): string {
 	return `${secret.slice(0, 6)}…${secret.slice(-4)}`;
 }
 
+/**
+ * Parses user input containing one or more API keys, separated by commas or newlines.
+ * Trims whitespace, eliminates duplicates, and removes empty entries.
+ */
+export function parseApiKeys(raw: string): string[] {
+	if (!raw || typeof raw !== "string") return [];
+	const parts = raw.split(/[,，\n\r]+/).map(key => key.trim()).filter(Boolean);
+	const seen = new Set<string>();
+	const result: string[] = [];
+	for (const key of parts) {
+		if (!seen.has(key)) {
+			seen.add(key);
+			result.push(key);
+		}
+	}
+	return result;
+}
+
 export class KeyPool {
 	private readonly states = new Map<string, KeyState>();
+	private readonly inFlight = new Map<string, number>();
 	private readonly clock: () => number;
 	private cursor = 0;
 	readonly cooldownMs: number;
@@ -89,6 +108,20 @@ export class KeyPool {
 		return this.states.get(key) ?? freshKeyState();
 	}
 
+	activeCount(key: string): number {
+		return this.inFlight.get(key) ?? 0;
+	}
+
+	acquire(key: string): void {
+		this.inFlight.set(key, (this.inFlight.get(key) ?? 0) + 1);
+	}
+
+	release(key: string): void {
+		const count = this.inFlight.get(key) ?? 0;
+		if (count <= 1) this.inFlight.delete(key);
+		else this.inFlight.set(key, count - 1);
+	}
+
 	/** A key serves requests while it is neither parked nor permanently finished. */
 	selectable(key: string): boolean {
 		const state = this.state(key);
@@ -99,17 +132,30 @@ export class KeyPool {
 		return this.keys.filter(key => this.selectable(key));
 	}
 
-	/** Next key in rotation order, or undefined when the pool has nothing left to offer. */
+	/**
+	 * Selects the next key, prioritizing keys with the fewest active in-flight
+	 * requests so parallel workers distribute load evenly across accounts.
+	 */
 	take(): string | undefined {
+		const selectableKeys: { key: string; index: number; active: number }[] = [];
 		for (let step = 0; step < this.keys.length; step++) {
 			const index = (this.cursor + step) % this.keys.length;
 			const key = this.keys[index];
 			if (this.selectable(key)) {
-				this.cursor = (index + 1) % this.keys.length;
-				return key;
+				selectableKeys.push({ key, index, active: this.activeCount(key) });
 			}
 		}
-		return undefined;
+		if (!selectableKeys.length) return undefined;
+
+		let minActive = selectableKeys[0].active;
+		for (const item of selectableKeys) {
+			if (item.active < minActive) minActive = item.active;
+		}
+
+		const chosen = selectableKeys.find(item => item.active === minActive)!;
+		this.cursor = (chosen.index + 1) % this.keys.length;
+		this.acquire(chosen.key);
+		return chosen.key;
 	}
 
 	record(key: string, status: KeyStatus, latencyMs = 0, httpStatus = 0): void {

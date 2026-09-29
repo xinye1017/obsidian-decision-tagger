@@ -34,10 +34,32 @@ export class ScopePicker {
 
 	setDisabled(disabled: boolean): void {
 		this.disabled = disabled;
+		if (disabled) this.close();
 		this.el.classList.toggle("is-disabled", disabled);
 		this.el.querySelectorAll("button").forEach(button => { (button as HTMLButtonElement).disabled = disabled; });
 		this.el.querySelector(".jev-scope-toggle")?.setAttribute("aria-disabled", String(disabled));
 	}
+
+	close(): void {
+		if (!this.open) return;
+		this.open = false;
+		document.removeEventListener("click", this.onDocClick);
+		document.removeEventListener("keydown", this.onDocKeydown);
+		this.render();
+	}
+
+	private onDocClick = (e: MouseEvent) => {
+		if (!this.el.contains(e.target as Node)) {
+			this.close();
+		}
+	};
+
+	private onDocKeydown = (e: KeyboardEvent) => {
+		if (e.key === "Escape" && this.open) {
+			e.stopPropagation();
+			this.close();
+		}
+	};
 
 	private tr(key: TranslationKey, params?: Record<string, string | number>): string {
 		return t(this.language(), key, params);
@@ -62,9 +84,9 @@ export class ScopePicker {
 		this.el.toggleClass("is-collapsed", !this.open);
 		this.renderToggle();
 		if (!this.open) return;
-		this.el.createDiv({ cls: "jev-scope-desc", text: this.tr("batch.scopeDesc") });
-		this.renderTrail();
-		this.renderList();
+		const dropdown = this.el.createDiv({ cls: "jev-scope-dropdown" });
+		this.renderTrail(dropdown);
+		this.renderList(dropdown);
 	}
 
 	private renderToggle() {
@@ -85,8 +107,14 @@ export class ScopePicker {
 		setIcon(toggle.createSpan({ cls: "jev-scope-caret" }), this.open ? "chevron-up" : "chevron-down");
 		const flip = () => {
 			if (this.disabled) return;
-			this.open = !this.open;
-			this.render();
+			if (this.open) {
+				this.close();
+			} else {
+				this.open = true;
+				document.addEventListener("click", this.onDocClick);
+				document.addEventListener("keydown", this.onDocKeydown);
+				this.render();
+			}
 		};
 		toggle.onclick = flip;
 		toggle.onkeydown = event => {
@@ -94,24 +122,23 @@ export class ScopePicker {
 		};
 	}
 
-	private renderTrail() {
-		const trail = this.el.createDiv({ cls: "jev-scope-trail" });
-		this.crumb(trail, "", this.tr("batch.scopeAll"), this.path === "");
+	private renderTrail(container: HTMLElement) {
+		if (!this.path) return;
+		const trail = container.createDiv({ cls: "jev-scope-trail" });
+		this.crumb(trail, "", this.app.vault.getName(), false);
 		let prefix = "";
-		for (const segment of this.path.split("/").filter(Boolean)) {
+		const segments = this.path.split("/").filter(Boolean);
+		for (let i = 0; i < segments.length; i++) {
+			const segment = segments[i];
 			prefix = prefix ? `${prefix}/${segment}` : segment;
 			trail.createSpan({ cls: "jev-scope-sep", text: "/" });
-			this.crumb(trail, prefix, segment, prefix === this.path);
+			const isCurrent = i === segments.length - 1;
+			this.crumb(trail, prefix, segment, isCurrent);
 		}
 	}
 
-	private renderList() {
-		const list = this.el.createDiv({ cls: "jev-scope-list" });
-		if (this.path) {
-			const up = list.createDiv({ cls: "jev-scope-row" });
-			const parent = this.path.split("/").slice(0, -1).join("/");
-			this.pick(up, "corner-up-left", this.tr("batch.scopeUp"), "", () => this.enter(parent));
-		}
+	private renderList(container: HTMLElement) {
+		const list = container.createDiv({ cls: "jev-scope-list" });
 		const children = this.childFolders();
 		if (!children.length) {
 			list.createDiv({ cls: "jev-scope-empty", text: this.tr("batch.scopeEmpty") });
@@ -123,8 +150,12 @@ export class ScopePicker {
 	}
 
 	private crumb(trail: HTMLElement, path: string, label: string, current: boolean) {
-		const crumb = trail.createEl("button", { cls: `jev-scope-crumb${current ? " is-current" : ""}`, text: label });
-		crumb.onclick = () => this.enter(path);
+		if (current) {
+			trail.createSpan({ cls: "jev-scope-crumb is-current", text: label });
+		} else {
+			const crumb = trail.createEl("button", { cls: "jev-scope-crumb", text: label });
+			crumb.onclick = () => this.enter(path);
+		}
 	}
 
 	private pick(row: HTMLElement, icon: string, label: string, meta: string, onPick: () => void) {
