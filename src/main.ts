@@ -2,6 +2,7 @@ import { getAllTags, Notice, Plugin, TFile } from "obsidian";
 import { NoteEvaluationResult, TagDefinition } from "./jevClient";
 import { ModelClient, ModelError, migrateModels, isEligible, ModelProfile, ModelProvider, PROVIDERS } from "./modelClient";
 import { KeyPool, sameKeys } from "./keyPool";
+import { splitFrontmatter, withEmptyFrontmatter } from "./frontmatter";
 import { DEFAULT_SETTINGS, JevTaggerSettings, JevTaggerSettingTab } from "./settings";
 import { TagSuggestModal } from "./tagSuggestModal";
 import { BatchTagModal } from "./batchTagModal";
@@ -248,10 +249,10 @@ export default class JevTaggerPlugin extends Plugin {
 	 * Extracts clean state for Jev System-1 model evaluation
 	 */
 	public async buildNoteState(file: TFile): Promise<Record<string, any>> {
-		const rawContent = await this.app.vault.read(file);
-
-		// Strip existing YAML frontmatter
-		let text = rawContent.replace(/^---[\s\S]*?---\s*/, "");
+		// Obsidian's own rule: only a block that opens at byte 0 is frontmatter.
+		// A looser match would swallow body content up to the next `---`, such as
+		// a horizontal rule, in notes that have no frontmatter at all.
+		let text = splitFrontmatter(await this.app.vault.read(file)).body.trim();
 		// Strip inline tags like #tag
 		text = text.replace(/(^|\s)#[^\s#]+/g, "$1").trim();
 
@@ -337,11 +338,21 @@ export default class JevTaggerPlugin extends Plugin {
 	}
 
 	/**
-	 * Safely adds tag to frontmatter using Obsidian's processFrontMatter API
+	 * Adds a tag to the YAML frontmatter using Obsidian's processFrontMatter.
+	 *
+	 * The empty block is created first on purpose: processFrontMatter writes
+	 * properties as plain body text into a file that has no frontmatter yet, so
+	 * without it a tag on such a note lands in the note instead of in the YAML.
 	 */
 	public async addTagToFile(file: TFile, newTag: string): Promise<boolean> {
-		let modified = false;
+		const tag = newTag.replace(/^#/, "").trim();
+		if (!tag) return false;
 
+		const content = await this.app.vault.read(file);
+		const ready = withEmptyFrontmatter(content);
+		if (ready !== content) await this.app.vault.modify(file, ready);
+
+		let modified = false;
 		await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
 			let currentTags: string[] = [];
 			if (frontmatter.tags) {
@@ -352,8 +363,8 @@ export default class JevTaggerPlugin extends Plugin {
 				}
 			}
 
-			if (!currentTags.includes(newTag)) {
-				currentTags.push(newTag);
+			if (!currentTags.includes(tag)) {
+				currentTags.push(tag);
 				modified = true;
 			}
 
@@ -364,14 +375,41 @@ export default class JevTaggerPlugin extends Plugin {
 	}
 
 	/**
-	 * Safely removes a tag from frontmatter (and inline content) using Obsidian APIs
+	 * Removes a tag from the frontmatter and from the note body.
+	 *
+	 * The body is cleaned first and the frontmatter second, so the inline edit
+	 * always runs against the content that was just read. processFrontMatter is
+	 * only called for files that really have a block: on a file without one it
+	 * would write properties as plain body text, which is the mirror image of
+	 * the bug addTagToFile guards against.
 	 */
 	public async removeTagFromFile(file: TFile, tagToRemove: string): Promise<boolean> {
 		let modified = false;
 		const cleanTag = tagToRemove.replace(/^#/, "").trim();
+		if (!cleanTag) return false;
 
-		// 1. Remove from Frontmatter
-		if (this.app.fileManager?.processFrontMatter) {
+		// 1. Inline tags in the body, which never touches the frontmatter block.
+		if (this.app.vault?.read && this.app.vault?.modify) {
+			try {
+				const { frontmatter, body } = splitFrontmatter(await this.app.vault.read(file));
+				const escaped = cleanTag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+				const inlineRegex = new RegExp(`(^|\\s)#${escaped}(?=[\\s,，.。!！?？:：;；"'\`\\]\\)\\>\\<]|$)(?!\\/)`, "g");
+				if (inlineRegex.test(body)) {
+					const updatedBody = body.replace(inlineRegex, (match, prefix) => {
+						return prefix.includes("\n") ? prefix : "";
+					});
+					if (updatedBody !== body) {
+						await this.app.vault.modify(file, frontmatter + updatedBody);
+						modified = true;
+					}
+				}
+			} catch {
+				// Continue if file read/modify fails
+			}
+		}
+
+		// 2. Frontmatter, only when the file has one.
+		if (this.app.fileManager?.processFrontMatter && await this.hasFrontmatterBlock(file)) {
 			await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
 				if (!frontmatter) return;
 
@@ -407,31 +445,11 @@ export default class JevTaggerPlugin extends Plugin {
 			});
 		}
 
-		// 2. Remove inline tags from note body if vault read/modify is available
-		if (this.app.vault?.read && this.app.vault?.modify) {
-			try {
-				const content = await this.app.vault.read(file);
-				const frontmatterMatch = content.match(/^---[\s\S]*?---\r?\n?/);
-				const frontmatterPart = frontmatterMatch ? frontmatterMatch[0] : "";
-				const bodyPart = content.slice(frontmatterPart.length);
-
-				const escaped = cleanTag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-				const inlineRegex = new RegExp(`(^|\\s)#${escaped}(?=[\\s,，.。!！?？:：;；"'\`\\]\\)\\>\\<]|$)(?!\\/)`, "g");
-				if (inlineRegex.test(bodyPart)) {
-					const updatedBody = bodyPart.replace(inlineRegex, (match, prefix) => {
-						return prefix.includes("\n") ? prefix : "";
-					});
-					if (updatedBody !== bodyPart) {
-						await this.app.vault.modify(file, frontmatterPart + updatedBody);
-						modified = true;
-					}
-				}
-			} catch {
-				// Continue if file read/modify fails
-			}
-		}
-
 		return modified;
+	}
+
+	private async hasFrontmatterBlock(file: TFile): Promise<boolean> {
+		return this.app.vault?.read ? splitFrontmatter(await this.app.vault.read(file)).frontmatter !== "" : false;
 	}
 
 	/**

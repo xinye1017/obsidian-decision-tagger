@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { build } from 'esbuild';
 
-const built = await build({ stdin: { contents: `export * from './src/modelClient'; export * from './src/keyPool'; export * from './src/keyProbe'; export * from './src/batchTagModal'; export {default as PluginClass} from './src/main';`, resolveDir: process.cwd(), loader: 'ts' }, bundle: true, platform: 'node', format: 'cjs', external: ['obsidian'], write: false });
+const built = await build({ stdin: { contents: `export * from './src/modelClient'; export * from './src/keyPool'; export * from './src/keyProbe'; export * from './src/frontmatter'; export * from './src/batchTagModal'; export {default as PluginClass} from './src/main';`, resolveDir: process.cwd(), loader: 'ts' }, bundle: true, platform: 'node', format: 'cjs', external: ['obsidian'], write: false });
 const element = () => ({ text: '', setText(value) { this.text = value; }, empty() {}, title: '', disabled: false });
 function load(request = async () => ({ status: 200, json: {} }), timers = {}) {
  const module = { exports: {} };
@@ -184,9 +184,95 @@ test('unchanged notes and rescans reset metrics', async () => {
 });
 test('frontmatter writes preserve other fields and existing tags, avoid duplicates', async () => {
  const api = load(); const plugin = new api.PluginClass(); const data = { tags: ['old'], title: 'Keep', nested: { key: 1 } };
- plugin.app = { fileManager: { processFrontMatter: async (_file, callback) => callback(data) } };
+ plugin.app = { vault: { read: async () => '---\ntitle: Keep\ntags:\n  - old\n---\nbody', modify: async () => {} }, fileManager: { processFrontMatter: async (_file, callback) => callback(data) } };
  assert.equal(await plugin.addTagToFile({}, 'AI'), true); assert.equal(await plugin.addTagToFile({}, 'AI'), false);
  assert.deepEqual(JSON.parse(JSON.stringify(data)), { tags: ['old', 'AI'], title: 'Keep', nested: { key: 1 } });
+});
+/**
+ * Stands in for the Obsidian file APIs, including the documented behaviour that
+ * processFrontMatter writes properties as plain body text when the file has no
+ * frontmatter block yet. https://forum.obsidian.md/t/77008
+ */
+function vaultWith(files) {
+ const BLOCK = /^---[ \t]*\r?\n(?:[\s\S]*?\r?\n)?---[ \t]*(?:\r?\n|$)/;
+ const parse = (block) => {
+  const frontmatter = { tags: (block.match(/^\s+-\s+(.+)$/gm) || []).map(item => item.replace(/^\s*-\s+/, '')) };
+  for (const line of block.split(/\r?\n/).slice(1, -1)) {
+   const pair = /^([\w-]+):\s*(.+)$/.exec(line);
+   if (pair && pair[1] !== 'tags') frontmatter[pair[1]] = pair[2];
+  }
+  return frontmatter;
+ };
+ const serialize = (frontmatter, eol) => {
+  const lines = Object.keys(frontmatter).filter(key => key !== 'tags').map(key => `${key}: ${frontmatter[key]}`);
+  if (frontmatter.tags && frontmatter.tags.length) lines.push('tags:', ...frontmatter.tags.map(tag => `  - ${tag}`));
+  return lines.length ? lines.join(eol) + eol : '';
+ };
+ return {
+  files,
+  app: {
+   vault: { read: async file => files[file.path] ?? '', modify: async (file, content) => { files[file.path] = content; } },
+   fileManager: {
+    async processFrontMatter(file, fn) {
+     const content = files[file.path] ?? '';
+     const match = BLOCK.exec(content);
+     const frontmatter = match ? parse(match[0]) : {};
+     fn(frontmatter);
+     const eol = content.includes('\r\n') ? '\r\n' : '\n';
+     const yaml = serialize(frontmatter, eol);
+     // The bug: with no block to update, Obsidian writes the properties as
+     // plain text and never adds the --- delimiters, so they end up in the body.
+     files[file.path] = match ? content.replace(match[0], yaml ? `---${eol}${yaml}---${eol}` : '') : `${yaml}${content}`;
+    },
+   },
+  },
+ };
+}
+test('a tag added to a note without frontmatter lands in the YAML, not in the body', async () => {
+ const api = load(); const plugin = new api.PluginClass();
+ const files = { 'plain.md': 'Body only, no properties.\n' };
+ plugin.app = vaultWith(files).app;
+ assert.equal(await plugin.addTagToFile({ path: 'plain.md' }, 'AI'), true);
+ assert.equal(files['plain.md'], '---\ntags:\n  - AI\n---\nBody only, no properties.\n');
+ assert.ok(api.hasFrontmatter(files['plain.md']));
+});
+test('an existing frontmatter block is updated in place and never duplicated', async () => {
+ const api = load(); const plugin = new api.PluginClass();
+ const files = { 'note.md': '---\ntitle: Keep\ntags:\n  - old\n---\nBody\n' };
+ plugin.app = vaultWith(files).app;
+ assert.equal(await plugin.addTagToFile({ path: 'note.md' }, 'AI'), true);
+ assert.equal(files['note.md'], '---\ntitle: Keep\ntags:\n  - old\n  - AI\n---\nBody\n');
+ assert.equal(await plugin.addTagToFile({ path: 'note.md' }, 'AI'), false, 'a tag that is already there is not written again');
+ assert.equal(files['note.md'], '---\ntitle: Keep\ntags:\n  - old\n  - AI\n---\nBody\n');
+});
+test('CRLF notes get a CRLF block so line endings stay consistent', async () => {
+ const api = load(); const plugin = new api.PluginClass();
+ const files = { 'win.md': 'Body\r\n' };
+ plugin.app = vaultWith(files).app;
+ await plugin.addTagToFile({ path: 'win.md' }, 'AI');
+ assert.equal(files['win.md'], '---\r\ntags:\r\n  - AI\r\n---\r\nBody\r\n', files['win.md']);
+ assert.ok(api.hasFrontmatter(files['win.md']));
+});
+test('removing a tag from a note without frontmatter leaves the file untouched', async () => {
+ const api = load(); const plugin = new api.PluginClass();
+ const files = { 'plain.md': 'Body with #AI inline.\n' };
+ plugin.app = vaultWith(files).app;
+ assert.equal(await plugin.removeTagFromFile({ path: 'plain.md' }, 'AI'), true);
+ assert.equal(files['plain.md'], 'Body with inline.\n', 'no block is created and no properties leak into the body');
+ const clean = { 'clean.md': 'Nothing to remove.\n' };
+ plugin.app = vaultWith(clean).app;
+ assert.equal(await plugin.removeTagFromFile({ path: 'clean.md' }, 'AI'), false);
+ assert.equal(clean['clean.md'], 'Nothing to remove.\n');
+});
+test('a horizontal rule in the body is not mistaken for frontmatter', async () => {
+ const api = load(); const plugin = new api.PluginClass(); const files = { 'rule.md': 'Intro line\n\n---\n\nTail line\n' };
+ plugin.app = vaultWith(files).app;
+ const state = await plugin.buildNoteState({ basename: 'Note', path: 'rule.md', parent: { path: '.' } });
+ assert.ok(state.content_start.includes('Intro line'), 'the body before the rule survives');
+ assert.ok(state.content_start.includes('Tail line'), 'the body after the rule is still analysed');
+ assert.equal(api.splitFrontmatter('---\ntitle: x\n---\nBody').body, 'Body');
+ assert.deepEqual([...api.splitFrontmatter('no block here').frontmatter], []);
+ assert.equal(api.withEmptyFrontmatter('---\n---\nBody'), '---\n---\nBody', 'an existing block is left alone');
 });
 test('note context removes frontmatter and inline tags while preserving headings', async () => {
  const api = load(); const plugin = new api.PluginClass();
